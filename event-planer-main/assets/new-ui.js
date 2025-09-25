@@ -608,62 +608,69 @@
     return wrap;
   };
 
-  const renderTimeline = (container, selectedId)=>{
+  const renderTimeline = (container, selectedId, options={})=>{
+    const { readOnly=false } = options;
     container.innerHTML="";
     const header=el("div","timeline-head");
     header.appendChild(el("h3",null,"Horario fijo del cliente"));
-    const selectedTask = selectedId ? getTaskById(selectedId) : null;
-    const addBtn=el("button","btn small","Crear tarea");
-    const handleCreate=()=>{
-      const task=createTimelineMilestone();
-      if(task){
-        selectTask(task.id);
+    let selectedTask=null;
+    if(!readOnly){
+      selectedTask = selectedId ? getTaskById(selectedId) : null;
+      const addBtn=el("button","btn small","Crear tarea");
+      const handleCreate=()=>{
+        const task=createTimelineMilestone();
+        if(task){
+          selectTask(task.id);
+          renderClient();
+        }
+      };
+      addBtn.onclick=handleCreate;
+      header.appendChild(addBtn);
+      const deleteBtn=el("button","btn small danger","Eliminar tarea");
+      const handleDelete=()=>{
+        if(!selectedTask || selectedTask.structureRelation!=="milestone") return;
+        if(!confirm("¿Eliminar esta tarea y sus dependientes?")) return;
+        const parentId=selectedTask.structureParentId;
+        const deletedId=selectedTask.id;
+        deleteTask(deletedId);
+        let nextSelection=null;
+        if(parentId){
+          nextSelection=parentId;
+        }else{
+          const remaining=getOrderedMilestones();
+          nextSelection=remaining[0]?.id || null;
+        }
+        selectTask(nextSelection);
+        if(state.project.view.timelineEditorId===deletedId){
+          const nextTask = nextSelection ? getTaskById(nextSelection) : null;
+          state.project.view.timelineEditorId = nextTask && nextTask.structureRelation==="milestone" ? nextTask.id : null;
+        }
         renderClient();
-      }
-    };
-    addBtn.onclick=handleCreate;
-    header.appendChild(addBtn);
-    const deleteBtn=el("button","btn small danger","Eliminar tarea");
-    const handleDelete=()=>{
-      if(!selectedTask || selectedTask.structureRelation!=="milestone") return;
-      if(!confirm("¿Eliminar esta tarea y sus dependientes?")) return;
-      const parentId=selectedTask.structureParentId;
-      const deletedId=selectedTask.id;
-      deleteTask(deletedId);
-      let nextSelection=null;
-      if(parentId){
-        nextSelection=parentId;
+      };
+      deleteBtn.onclick=handleDelete;
+      deleteBtn.disabled = !(selectedTask && selectedTask.structureRelation==="milestone");
+      header.appendChild(deleteBtn);
+
+      const milestonesPreview=getOrderedMilestones();
+      if(!milestonesPreview.length){
+        addBtn.disabled = !hasInitialTime() || !hasInitialLocation();
       }else{
-        const remaining=getOrderedMilestones();
-        nextSelection=remaining[0]?.id || null;
+        addBtn.disabled = false;
       }
-      selectTask(nextSelection);
-      if(state.project.view.timelineEditorId===deletedId){
-        const nextTask = nextSelection ? getTaskById(nextSelection) : null;
-        state.project.view.timelineEditorId = nextTask && nextTask.structureRelation==="milestone" ? nextTask.id : null;
-      }
-      renderClient();
-    };
-    deleteBtn.onclick=handleDelete;
-    deleteBtn.disabled = !(selectedTask && selectedTask.structureRelation==="milestone");
-    header.appendChild(deleteBtn);
+    }
     container.appendChild(header);
 
     const milestones=getOrderedMilestones();
-    if(!milestones.length){
-      addBtn.disabled = !hasInitialTime() || !hasInitialLocation();
-    }else{
-      addBtn.disabled = false;
-    }
-
     const list=el("div","timeline-track");
     if(!milestones.length){
       list.appendChild(el("div","timeline-empty","Todavía no hay tareas en el horario."));
     }else{
-      const editorId = resolveTimelineEditorId(milestones, selectedId);
+      const editorId = readOnly ? null : resolveTimelineEditorId(milestones, selectedId);
       milestones.forEach(task=>{
-        const card=el("button","timeline-card");
-        if(task.id===editorId) card.classList.add("active");
+        const tag=readOnly?"div":"button";
+        const card=el(tag,"timeline-card");
+        if(readOnly) card.classList.add("readonly");
+        if(!readOnly && task.id===editorId) card.classList.add("active");
         const hasRange=(task.startMin!=null && task.endMin!=null);
         const time=hasRange ? `${toHHMM(task.startMin)} – ${toHHMM(task.endMin)}` : (task.startMin!=null ? toHHMM(task.startMin) : "Sin hora");
         card.appendChild(el("div","time",time));
@@ -678,15 +685,21 @@
           subtitle=locationNameById(task.locationId) || "Sin localización";
         }
         card.appendChild(el("div","mini",subtitle));
-        card.onclick=()=>{
-          selectTask(task.id);
-          state.project.view.timelineEditorId = task.id;
-          renderClient();
-        };
+        if(!readOnly){
+          card.onclick=()=>{
+            selectTask(task.id);
+            state.project.view.timelineEditorId = task.id;
+            renderClient();
+          };
+        }
         list.appendChild(card);
       });
     }
     container.appendChild(list);
+
+    if(readOnly){
+      return;
+    }
 
     if(!milestones.length){
       state.project.view.timelineEditorId = null;
@@ -700,54 +713,145 @@
     }
   };
 
-  const renderCatalog = (container, tasks, selectedId)=>{
-    container.innerHTML="";
-    const toolbar=el("div","catalog-toolbar");
-    const addBtn=el("button","btn primary full","+ Nuevo hito" );
-    addBtn.onclick=()=>{ createTask({relation:"milestone"}); renderClient(); };
-    toolbar.appendChild(addBtn);
-    container.appendChild(toolbar);
-
-    const sections=[
-      { key:"pending", title:"Acciones con datos pendientes", filter:(t)=>!isTaskComplete(t) },
-      { key:"complete", title:"Acciones completas", filter:(t)=>isTaskComplete(t) }
-    ];
-
-    sections.forEach(section=>{
-      const sec=el("div","catalog-section");
-      sec.appendChild(el("div","catalog-title",section.title));
-      const list=sortedTasks(tasks.filter(section.filter));
-      if(!list.length){
-        sec.appendChild(el("div","mini muted","Sin tareas"));
-      }else{
-        const grid=el("div","catalog-grid");
-        list.forEach(task=>{
-          const item=el("button","catalog-item","");
-          if(task.id===selectedId) item.classList.add("active");
-          item.onclick=()=>{ selectTask(task.id); renderClient(); };
-
-          const title=el("div","catalog-name",labelForTask(task));
-          item.appendChild(title);
-          const relationLabel=RELATION_LABEL[task.structureRelation] || "Tarea";
-          item.appendChild(el("span","relation-tag",relationLabel));
-          const meta=el("div","catalog-meta");
-          const time=task.startMin!=null ? toHHMM(task.startMin) : "Sin hora";
-          meta.appendChild(el("span","catalog-time",time));
-          const duration=task.durationMin!=null ? `${task.durationMin} min` : "Sin duración";
-          meta.appendChild(el("span","catalog-duration",duration));
-          item.appendChild(meta);
-
-          const path=getBreadcrumb(task);
-          if(path.length>1){
-            const trail=path.slice(0,-1).map(node=>labelForTask(node)).join(" · ");
-            item.appendChild(el("div","mini muted",trail));
-          }
-          grid.appendChild(item);
-        });
-        sec.appendChild(grid);
+  const describeAction = (task)=>{
+    const parts=[labelForTask(task)];
+    if(task.startMin!=null && task.endMin!=null){
+      parts.push(`${toHHMM(task.startMin)}-${toHHMM(task.endMin)}`);
+    }else if(task.startMin!=null){
+      parts.push(toHHMM(task.startMin));
+    }
+    if(task.actionType===ACTION_TYPE_TRANSPORT){
+      const flow=transportFlowForTask(task);
+      const originName=locationNameById(flow.origin) || "Sin origen";
+      const destName=locationNameById(flow.destination) || "Sin destino";
+      parts.push(`${originName} → ${destName}`);
+    }else if(task.locationApplies!==false){
+      const locName=locationNameById(task.locationId);
+      if(locName){
+        parts.push(locName);
       }
-      container.appendChild(sec);
+    }
+    return parts.join(" · ");
+  };
+
+  const buildRelationGroup = (task, relation)=>{
+    const wrap=el("div","relation-group");
+    const related=sortedTasks(getTaskChildren(task.id).filter(ch=>ch.structureRelation===relation));
+    const groups=[
+      { title:"Acciones con datos pendientes", items:related.filter(ch=>!isTaskComplete(ch)), className:"pending" },
+      { title:"Acciones completas", items:related.filter(ch=>isTaskComplete(ch)), className:"complete" }
+    ];
+    let hasContent=false;
+    groups.forEach(group=>{
+      if(!group.items.length) return;
+      hasContent=true;
+      wrap.appendChild(el("div","relation-subtitle",group.title));
+      const list=el("ul",`relation-list ${group.className}`);
+      group.items.forEach(item=>{
+        list.appendChild(el("li",null,describeAction(item)));
+      });
+      wrap.appendChild(list);
     });
+    if(!hasContent){
+      wrap.appendChild(el("div","relation-empty","Sin acciones vinculadas"));
+    }
+    return wrap;
+  };
+
+  const buildMaterialsSummary = (task)=>{
+    const items=(task.materiales||[]).filter(mat=>mat && (mat.materialTypeId || mat.cantidad));
+    if(!items.length){
+      return el("div","relation-empty","Sin materiales");
+    }
+    const list=el("ul","material-list");
+    let hasMaterial=false;
+    items.forEach(mat=>{
+      const type=(state.materialTypes||[]).find(mt=>mt.id===mat.materialTypeId);
+      const name=type?.nombre || "Material sin definir";
+      const qty=Number(mat.cantidad);
+      const text=Number.isFinite(qty) && qty>0 ? `${name} · x${qty}` : name;
+      hasMaterial=true;
+      list.appendChild(el("li",null,text));
+    });
+    if(!hasMaterial){
+      return el("div","relation-empty","Sin materiales");
+    }
+    return list;
+  };
+
+  const buildTaskSummary = (task)=>{
+    const wrap=el("div","task-summary");
+    const hasRange=task.startMin!=null && task.endMin!=null;
+    const range=hasRange ? `${toHHMM(task.startMin)} – ${toHHMM(task.endMin)}` : (task.startMin!=null ? toHHMM(task.startMin) : "Sin horario");
+    wrap.appendChild(el("div","task-range",range));
+    wrap.appendChild(el("div","task-name",labelForTask(task)));
+    let locationText="";
+    if(task.actionType===ACTION_TYPE_TRANSPORT){
+      const flow=transportFlowForTask(task);
+      const originName=locationNameById(flow.origin) || "Sin origen";
+      const destName=locationNameById(flow.destination) || "Sin destino";
+      locationText=`${originName} → ${destName}`;
+    }else if(task.locationApplies!==false){
+      locationText=locationNameById(task.locationId) || "Sin localización";
+    }else{
+      locationText="Sin localización";
+    }
+    if(locationText){
+      wrap.appendChild(el("div","task-location",locationText));
+    }
+    const statusLabel=isTaskComplete(task)?"Acción completa":"Datos pendientes";
+    const status=el("span","task-status",statusLabel);
+    status.classList.add(isTaskComplete(task)?"ok":"warn");
+    wrap.appendChild(status);
+    return wrap;
+  };
+
+  const renderCatalog = (container, tasks)=>{
+    container.innerHTML="";
+    container.appendChild(el("h3","catalog-relations-title","Vinculaciones de tareas"));
+    if(!tasks.length){
+      container.appendChild(el("div","mini muted","No hay tareas registradas."));
+      return;
+    }
+    const wrapper=el("div","relations-table-wrapper");
+    const table=el("table","relations-table");
+    const thead=el("thead");
+    const headRow=el("tr");
+    ["Tarea","Pretareas","Concurrencias","Materiales","Postareas"].forEach(label=>{
+      headRow.appendChild(el("th",null,label));
+    });
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+    const tbody=el("tbody");
+    const ordered=sortedTasks(tasks);
+    ordered.forEach(task=>{
+      applyTaskDefaults(task);
+      const row=el("tr");
+      const tareaCell=el("td");
+      tareaCell.appendChild(buildTaskSummary(task));
+      row.appendChild(tareaCell);
+
+      const preCell=el("td");
+      preCell.appendChild(buildRelationGroup(task,"pre"));
+      row.appendChild(preCell);
+
+      const parallelCell=el("td");
+      parallelCell.appendChild(buildRelationGroup(task,"parallel"));
+      row.appendChild(parallelCell);
+
+      const materialsCell=el("td");
+      materialsCell.appendChild(buildMaterialsSummary(task));
+      row.appendChild(materialsCell);
+
+      const postCell=el("td");
+      postCell.appendChild(buildRelationGroup(task,"post"));
+      row.appendChild(postCell);
+
+      tbody.appendChild(row);
+    });
+    table.appendChild(tbody);
+    wrapper.appendChild(table);
+    container.appendChild(wrapper);
   };
 
   const renderMaterials = (task)=>{
@@ -1074,28 +1178,21 @@
       selectedId=visible[0].id;
       state.project.view.selectedTaskId=selectedId;
     }
-    const selectedTask = selectedId ? getTaskById(selectedId) : null;
     const isCatalogMount = catalogTarget && root === catalogTarget;
     root.innerHTML="";
     const screen=el("div","client-screen");
     const timeline=el("div","client-timeline");
-    renderTimeline(timeline, selectedId);
+    renderTimeline(timeline, selectedId, { readOnly:isCatalogMount });
     screen.appendChild(timeline);
     root.appendChild(screen);
 
     if(isCatalogMount){
-      const layout=el("div","client-layout");
-      const catalog=el("div","task-catalog");
-      const card=el("div","task-card");
-      layout.appendChild(catalog);
-      layout.appendChild(card);
-      screen.appendChild(layout);
-
-      renderCatalog(catalog, visible.length?visible:tasks, selectedId);
-      renderTaskCard(card, selectedTask);
+      const catalog=el("div","catalog-relations");
+      screen.appendChild(catalog);
+      renderCatalog(catalog, visible.length?visible:tasks);
     }else{
       const info=el("div","client-info");
-      info.appendChild(el("p",null,"Gestiona los detalles completos de las tareas desde el Catálogo de Tareas."));
+      info.appendChild(el("p",null,"Consulta y define las vinculaciones de cada tarea desde el Catálogo de Tareas."));
       screen.appendChild(info);
     }
   };
