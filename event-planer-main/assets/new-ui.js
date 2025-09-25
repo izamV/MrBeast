@@ -204,7 +204,23 @@
       actionType: ACTION_TYPE_NORMAL
     };
     ensureDuration(task);
-    list.push(task);
+    let insertIndex = list.length;
+    const selectedId = state?.project?.view?.selectedTaskId || null;
+    if(selectedId){
+      const selectedIndex = list.findIndex(t=>t.id===selectedId);
+      if(selectedIndex !== -1){
+        const selectedTask = list[selectedIndex];
+        const sameParent = (selectedTask.structureParentId || null) === (parentId || null);
+        if(parentId){
+          if(sameParent && selectedTask.structureRelation === task.structureRelation){
+            insertIndex = selectedIndex + 1;
+          }
+        }else if(sameParent){
+          insertIndex = selectedIndex + 1;
+        }
+      }
+    }
+    list.splice(insertIndex, 0, task);
     touchTask(task);
     state.project.view.selectedTaskId = task.id;
     return task;
