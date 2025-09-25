@@ -45,8 +45,46 @@
 
   window.openCatTask = (cont)=>{
     cont.innerHTML=""; cont.appendChild(el("h3",null,"Catálogo: Tareas"));
-    const notice = el("div","mini","El catálogo de tareas no está disponible.");
-    cont.appendChild(notice);
+    const add=el("div","row");
+    const name=el("input","input"); name.placeholder="Nombre";
+    const color=el("input","input"); color.type="color"; color.value="#60a5fa";
+    const typeSel=el("select","input");
+    [
+      {label:"Normal", value:ACTION_TYPE_NORMAL},
+      {label:"Transporte", value:ACTION_TYPE_TRANSPORT}
+    ].forEach(opt=>{ const o=el("option",null,opt.label); o.value=opt.value; typeSel.appendChild(o); });
+    const b=el("button","btn","Añadir");
+    b.onclick=()=>{
+      const n=name.value.trim(); if(!n) return;
+      state.taskTypes.push({
+        id:"T_"+(state.taskTypes.length+1),
+        nombre:n,
+        color:color.value||"#60a5fa",
+        locked:false,
+        tipo:typeSel.value||ACTION_TYPE_NORMAL,
+        quien:"CLIENTE"
+      });
+      name.value=""; emitChanged(); openCatTask(cont);
+    };
+    add.appendChild(name); add.appendChild(color); add.appendChild(typeSel); add.appendChild(b); cont.appendChild(add);
+
+    // Lista
+    const tbl=el("table"); const tb=el("tbody"); tbl.appendChild(tb);
+    // Orden: bloqueados primero
+    const order=id=>({[TASK_TRANSP]:0,[TASK_MONTAGE]:1,[TASK_DESMONT]:2}[id]??9);
+    [...state.taskTypes].sort((a,b)=> (a.locked===b.locked? order(a.id)-order(b.id) : (a.locked?-1:1)) || (a.nombre||"").localeCompare(b.nombre||"") )
+      .forEach((t,idx)=>{
+        const i= state.taskTypes.findIndex(x=>x.id===t.id);
+        const tr=el("tr");
+        const n=el("input","input"); n.value=t.nombre; n.oninput=()=>{ t.nombre=n.value; touch(); };
+        const c=el("input","input"); c.type="color"; c.value=t.color||"#60a5fa"; c.oninput=()=>{ t.color=c.value; touch(); };
+        const tipo=el("span","mini",t.tipo||ACTION_TYPE_NORMAL);
+        const quien=el("span","mini",t.quien||"CLIENTE");
+        const del=el("button","btn danger","Eliminar"); del.onclick=()=>{ state.taskTypes.splice(i,1); emitChanged(); openCatTask(cont); };
+        tr.appendChild(n); tr.appendChild(c); tr.appendChild(tipo); tr.appendChild(quien); tr.appendChild(del); tb.appendChild(tr);
+        lockMark(tr, !!t.locked);
+      });
+    cont.appendChild(tbl);
   };
 
   window.openCatMat = (cont)=>{
