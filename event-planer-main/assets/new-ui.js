@@ -869,22 +869,29 @@
       state.project.view.selectedTaskId=selectedId;
     }
     const selectedTask = selectedId ? getTaskById(selectedId) : null;
+    const isCatalogMount = catalogTarget && root === catalogTarget;
     root.innerHTML="";
     const screen=el("div","client-screen");
     const timeline=el("div","client-timeline");
     renderTimeline(timeline, selectedId);
     screen.appendChild(timeline);
-
-    const layout=el("div","client-layout");
-    const catalog=el("div","task-catalog");
-    const card=el("div","task-card");
-    layout.appendChild(catalog);
-    layout.appendChild(card);
-    screen.appendChild(layout);
     root.appendChild(screen);
 
-    renderCatalog(catalog, visible.length?visible:tasks, selectedId);
-    renderTaskCard(card, selectedTask);
+    if(isCatalogMount){
+      const layout=el("div","client-layout");
+      const catalog=el("div","task-catalog");
+      const card=el("div","task-card");
+      layout.appendChild(catalog);
+      layout.appendChild(card);
+      screen.appendChild(layout);
+
+      renderCatalog(catalog, visible.length?visible:tasks, selectedId);
+      renderTaskCard(card, selectedTask);
+    }else{
+      const info=el("div","client-info");
+      info.appendChild(el("p",null,"Gestiona los detalles completos de las tareas desde el Catálogo de Tareas."));
+      screen.appendChild(info);
+    }
   };
 
   window.renderClient = ()=>{
@@ -1088,14 +1095,24 @@ const a=document.createElement("a");
   document.addEventListener("DOMContentLoaded", ()=>{
     ensureViewDefaults();
     syncStaffSessions();
+    const showClientView = ()=>{
+      const cliente=document.getElementById("clienteView");
+      const catalog=document.getElementById("catalogView");
+      const result=document.getElementById("resultView");
+      if(cliente) cliente.style.display="";
+      if(catalog) catalog.style.display="none";
+      if(result) result.style.display="none";
+    };
+
     const tabs=document.getElementById("personTabs");
     if(tabs){
       tabs.innerHTML="";
       const btn=el("button","tab active","Horario del cliente");
-      btn.onclick=()=>{ state.project.view.lastTab="CLIENTE"; renderClient(); };
+      btn.onclick=()=>{ showClientView(); state.project.view.lastTab="CLIENTE"; renderClient(); };
       tabs.appendChild(btn);
     }
     ensureDefaultClientTarget();
+    showClientView();
     renderClient();
   });
 })();
