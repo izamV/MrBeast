@@ -179,46 +179,55 @@
   const touchTask = (task)=>{
     applyTaskDefaults(task);
     ensureDuration(task);
+    const list=getTaskList();
+    ensureSequentialMilestonesFrom(task, list);
     syncStaffSessions();
     touch();
   };
 
   const defaultTimelineStart = ()=> state.horaInicial?.CLIENTE ?? 9*60;
 
-  const ensureSequentialMilestonesFrom = (task, list)=>{
-    if(!task || task.structureParentId || task.structureRelation !== "milestone") return;
-    const roots = list.filter(item=>!item.structureParentId && item.structureRelation === "milestone");
-    const index = roots.findIndex(item=>item.id===task.id);
-    if(index === -1) return;
-    const baseStart = defaultTimelineStart();
-    let previousEnd = baseStart;
-    if(index > 0){
-      const prev = roots[index-1];
-      applyTaskDefaults(prev);
-      ensureDuration(prev);
-      if(prev.endMin != null){
-        previousEnd = prev.endMin;
-      }else if(prev.startMin != null){
-        const prevDuration = Math.max(5, Number(prev.durationMin)||60);
-        previousEnd = prev.startMin + prevDuration;
-      }
-    }
+  const nextCursorForMilestone = (task, fallback)=>{
+    if(!task) return fallback;
+    applyTaskDefaults(task);
     const duration = Math.max(5, Number(task.durationMin)||60);
     task.durationMin = duration;
-    task.startMin = previousEnd;
+    if(task.startMin == null){
+      task.endMin = null;
+      return fallback;
+    }
     task.endMin = task.startMin + duration;
-    ensureDuration(task);
-    let cursor = task.endMin != null ? task.endMin : (task.startMin != null ? task.startMin + duration : previousEnd);
-    for(let i=index+1;i<roots.length;i++){
+    return task.endMin;
+  };
+
+  const enforceSequentialMilestones = (roots, startIndex=0)=>{
+    if(!roots.length) return;
+    const baseStart = defaultTimelineStart();
+    const begin = Math.max(0, startIndex);
+    let cursor = begin>0 ? nextCursorForMilestone(roots[begin-1], baseStart) : baseStart;
+    for(let i=begin;i<roots.length;i++){
       const item = roots[i];
       applyTaskDefaults(item);
-      const itemDuration = Math.max(5, Number(item.durationMin)||60);
-      item.durationMin = itemDuration;
+      const duration = Math.max(5, Number(item.durationMin)||60);
+      item.durationMin = duration;
       item.startMin = cursor;
-      item.endMin = cursor + itemDuration;
-      ensureDuration(item);
-      cursor = item.endMin != null ? item.endMin : (item.startMin != null ? item.startMin + itemDuration : cursor);
+      item.endMin = item.startMin + duration;
+      cursor = nextCursorForMilestone(item, cursor + duration);
     }
+  };
+
+  const ensureSequentialMilestonesFrom = (task, list)=>{
+    if(!Array.isArray(list) || !list.length) return;
+    const roots = list.filter(item=>!item.structureParentId && item.structureRelation === "milestone");
+    if(!roots.length) return;
+    if(!task){
+      enforceSequentialMilestones(roots, 0);
+      return;
+    }
+    if(task.structureParentId || task.structureRelation !== "milestone") return;
+    const index = roots.findIndex(item=>item.id===task.id);
+    if(index === -1) return;
+    enforceSequentialMilestones(roots, index);
   };
 
   const createTask = ({ parentId=null, relation=null }={})=>{
@@ -274,6 +283,8 @@
     };
     visit(id);
     state.sessions.CLIENTE = list.filter(t=>!toRemove.has(t.id));
+    const nextList=getTaskList();
+    ensureSequentialMilestonesFrom(null, nextList);
     syncStaffSessions();
     touch();
   };
@@ -446,6 +457,8 @@
       ensureDuration(item);
     });
     ensureDuration(task);
+    const list=getTaskList();
+    ensureSequentialMilestonesFrom(task, list);
     syncStaffSessions();
     touch();
     return true;
