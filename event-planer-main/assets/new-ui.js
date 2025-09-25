@@ -22,6 +22,9 @@
   const originalEnsureDefaults = window.ensureDefaults || (()=>{});
   const originalEnsureLinkFields = window.ensureLinkFields || (()=>{});
 
+  const clientTargets = new Set();
+  let catalogTarget = null;
+
   const ensureViewDefaults = ()=>{
     state.project = state.project || {};
     state.project.view = state.project.view || {};
@@ -584,9 +587,12 @@
     return tasks;
   };
 
-  window.renderClient = ()=>{
-    ensureViewDefaults();
-    const root=document.getElementById("clienteView");
+  const ensureDefaultClientTarget = ()=>{
+    const main=document.getElementById("clienteView");
+    if(main) clientTargets.add(main);
+  };
+
+  const renderClientInto = (root)=>{
     if(!root) return;
     const tasks=getTaskList();
     const visible=getVisibleTasks();
@@ -618,6 +624,34 @@
 
     renderCatalog(catalog, visible.length?visible:tasks, selectedId);
     renderTaskCard(card, selectedTask);
+  };
+
+  window.renderClient = ()=>{
+    ensureViewDefaults();
+    ensureDefaultClientTarget();
+    const targets=[...clientTargets];
+    targets.forEach(root=>{
+      if(!root || !root.isConnected){
+        clientTargets.delete(root);
+        return;
+      }
+      renderClientInto(root);
+    });
+  };
+
+  window.setCatalogClientTarget = (container)=>{
+    ensureDefaultClientTarget();
+    if(catalogTarget && clientTargets.has(catalogTarget)){
+      clientTargets.delete(catalogTarget);
+      if(catalogTarget instanceof HTMLElement){
+        catalogTarget.innerHTML="";
+      }
+    }
+    catalogTarget = container || null;
+    if(catalogTarget){
+      clientTargets.add(catalogTarget);
+    }
+    window.renderClient();
   };
 
   const collectPersons = ()=>{
@@ -800,5 +834,7 @@ const a=document.createElement("a");
       btn.onclick=()=>{ state.project.view.lastTab="CLIENTE"; renderClient(); };
       tabs.appendChild(btn);
     }
+    ensureDefaultClientTarget();
+    renderClient();
   });
 })();
