@@ -47,6 +47,12 @@
     cantidad: Number.isFinite(Number(m?.cantidad)) ? Number(m.cantidad) : 0
   });
 
+  const defaultVehicleId = ()=>{
+    const list = state?.vehicles || [];
+    const walk = list.find(v=>v.id==="V_WALK");
+    return (walk || list[0] || {}).id || null;
+  };
+
   const applyTaskDefaults = (task)=>{
     if(!task) return;
     if(!task.id) task.id = nextId();
@@ -62,6 +68,7 @@
     task.assignedStaffId = undefined;
     if(typeof task.locationApplies === "undefined") task.locationApplies = true;
     if(typeof task.locationId === "undefined") task.locationId = null;
+    if(typeof task.vehicleId === "undefined") task.vehicleId = null;
     if(typeof task.comentario !== "string") task.comentario = task.comentario ? String(task.comentario) : "";
     task.startMin = toNumberOrNull(task.startMin);
     task.endMin = toNumberOrNull(task.endMin);
@@ -72,6 +79,11 @@
     if(task.durationMin == null) task.durationMin = 60;
     task.limitEarlyMin = toNumberOrNull(task.limitEarlyMin);
     task.limitLateMin = toNumberOrNull(task.limitLateMin);
+    if(task.actionType !== ACTION_TYPE_TRANSPORT){
+      task.vehicleId = null;
+    }else if(!task.vehicleId){
+      task.vehicleId = defaultVehicleId();
+    }
   };
 
   const ensureDuration = (task)=>{
@@ -183,6 +195,7 @@
       limitLateMin: null,
       locationId: null,
       locationApplies: true,
+      vehicleId: null,
       materiales: [],
       comentario: "",
       assignedStaffIds: [],
@@ -245,6 +258,32 @@
   };
 
   const locationNameById = (id)=> (state.locations||[]).find(l=>l.id===id)?.nombre || "";
+
+  const computeTransportFlow = (milestones, idx)=>{
+    let current = state.localizacionInicial?.CLIENTE || null;
+    for(let i=0;i<milestones.length;i++){
+      const item=milestones[i];
+      const destination = item.locationId || current;
+      if(i===idx){
+        return { origin: current, destination };
+      }
+      if(item.actionType===ACTION_TYPE_TRANSPORT){
+        current = destination;
+      }else if(item.locationApplies!==false){
+        current = item.locationId || current;
+      }
+    }
+    const fallback=milestones[idx];
+    return { origin: current, destination: fallback?.locationId || current };
+  };
+
+  const transportFlowForTask = (task)=>{
+    if(!task) return { origin:null, destination:null };
+    const milestones=getOrderedMilestones();
+    const idx=milestones.findIndex(t=>t.id===task.id);
+    if(idx===-1) return { origin:null, destination:task.locationId||null };
+    return computeTransportFlow(milestones, idx);
+  };
 
   const resolveTimelineEditorId = (milestones, selectedId)=>{
     let editorId = state.project.view.timelineEditorId || null;
@@ -394,7 +433,13 @@
       }
     };
     toggleInput.onchange=()=>{
-      task.actionType = toggleInput.checked ? ACTION_TYPE_TRANSPORT : ACTION_TYPE_NORMAL;
+      const isTransport = toggleInput.checked;
+      task.actionType = isTransport ? ACTION_TYPE_TRANSPORT : ACTION_TYPE_NORMAL;
+      if(!isTransport){
+        task.vehicleId = null;
+      }else if(!task.vehicleId){
+        task.vehicleId = defaultVehicleId();
+      }
       updateToggleState();
       touchTask(task);
       state.project.view.timelineEditorId = task.id;
@@ -423,18 +468,60 @@
       state.project.view.timelineEditorId = task.id;
       renderClient();
     };
+    const flowHint=el("div","timeline-hint");
     const locHint=el("div","timeline-hint","Activa transporte para seleccionar un destino.");
     const updateLocationState = ()=>{
       destSelect.disabled = !toggleInput.checked;
       locLabel.textContent = toggleInput.checked?"Destino":"Localización";
       locHint.style.display = toggleInput.checked?"none":"";
+      if(toggleInput.checked){
+        const flow=transportFlowForTask(task);
+        const originName=locationNameById(flow.origin) || "Sin origen";
+        const destName=locationNameById(flow.destination) || "Sin destino";
+        flowHint.textContent = `Origen: ${originName} → Destino: ${destName}`;
+        flowHint.style.display="";
+      }else{
+        flowHint.style.display="none";
+      }
     };
     updateLocationState();
     toggleInput.addEventListener("change", updateLocationState);
     locRow.appendChild(locLabel);
     locRow.appendChild(destSelect);
     locRow.appendChild(locHint);
+    locRow.appendChild(flowHint);
     body.appendChild(locRow);
+
+    const vehicleRow=el("div","timeline-field");
+    const vehicleLabel=el("label",null,"Vehículo");
+    const vehicleSelect=el("select","input");
+    const vehicleEmpty=el("option",null,"- seleccionar -"); vehicleEmpty.value=""; vehicleSelect.appendChild(vehicleEmpty);
+    (state.vehicles||[]).forEach(veh=>{
+      const opt=el("option",null,veh.nombre||"Vehículo"); opt.value=veh.id; if(veh.id===task.vehicleId) opt.selected=true; vehicleSelect.appendChild(opt);
+    });
+    vehicleSelect.onchange=()=>{
+      task.vehicleId = vehicleSelect.value || null;
+      touchTask(task);
+      state.project.view.timelineEditorId = task.id;
+      renderClient();
+    };
+    const updateVehicleState = ()=>{
+      const active=toggleInput.checked;
+      vehicleRow.style.display = active?"":"none";
+      vehicleSelect.disabled = !active;
+      if(active && !task.vehicleId){
+        const def=defaultVehicleId();
+        if(def){
+          task.vehicleId=def;
+          vehicleSelect.value=def;
+        }
+      }
+    };
+    updateVehicleState();
+    toggleInput.addEventListener("change", updateVehicleState);
+    vehicleRow.appendChild(vehicleLabel);
+    vehicleRow.appendChild(vehicleSelect);
+    body.appendChild(vehicleRow);
 
     const durationRow=el("div","timeline-duration");
     durationRow.appendChild(el("span","duration-label","Duración"));
@@ -470,6 +557,7 @@
     container.innerHTML="";
     const header=el("div","timeline-head");
     header.appendChild(el("h3",null,"Horario fijo del cliente"));
+    const selectedTask = selectedId ? getTaskById(selectedId) : null;
     const addBtn=el("button","btn small","Crear tarea");
     const handleCreate=()=>{
       const task=createTimelineMilestone();
@@ -480,6 +568,30 @@
     };
     addBtn.onclick=handleCreate;
     header.appendChild(addBtn);
+    const deleteBtn=el("button","btn small danger","Eliminar tarea");
+    const handleDelete=()=>{
+      if(!selectedTask || selectedTask.structureRelation!=="milestone") return;
+      if(!confirm("¿Eliminar esta tarea y sus dependientes?")) return;
+      const parentId=selectedTask.structureParentId;
+      const deletedId=selectedTask.id;
+      deleteTask(deletedId);
+      let nextSelection=null;
+      if(parentId){
+        nextSelection=parentId;
+      }else{
+        const remaining=getOrderedMilestones();
+        nextSelection=remaining[0]?.id || null;
+      }
+      selectTask(nextSelection);
+      if(state.project.view.timelineEditorId===deletedId){
+        const nextTask = nextSelection ? getTaskById(nextSelection) : null;
+        state.project.view.timelineEditorId = nextTask && nextTask.structureRelation==="milestone" ? nextTask.id : null;
+      }
+      renderClient();
+    };
+    deleteBtn.onclick=handleDelete;
+    deleteBtn.disabled = !(selectedTask && selectedTask.structureRelation==="milestone");
+    header.appendChild(deleteBtn);
     container.appendChild(header);
 
     const milestones=getOrderedMilestones();
@@ -501,8 +613,16 @@
         const time=hasRange ? `${toHHMM(task.startMin)} – ${toHHMM(task.endMin)}` : (task.startMin!=null ? toHHMM(task.startMin) : "Sin hora");
         card.appendChild(el("div","time",time));
         card.appendChild(el("div","title",labelForTask(task)));
-        const locName=locationNameById(task.locationId) || "Sin localización";
-        card.appendChild(el("div","mini",locName));
+        let subtitle="";
+        if(task.actionType===ACTION_TYPE_TRANSPORT){
+          const flow=transportFlowForTask(task);
+          const originName=locationNameById(flow.origin) || "Sin origen";
+          const destName=locationNameById(flow.destination) || "Sin destino";
+          subtitle=`${originName} → ${destName}`;
+        }else{
+          subtitle=locationNameById(task.locationId) || "Sin localización";
+        }
+        card.appendChild(el("div","mini",subtitle));
         card.onclick=()=>{
           selectTask(task.id);
           state.project.view.timelineEditorId = task.id;
@@ -709,14 +829,6 @@
     center.appendChild(breadcrumb);
 
     const form=el("div","task-form");
-    const nameRow=el("div","field-row");
-    nameRow.appendChild(el("label",null,"Nombre"));
-    const nameInput=el("input","input"); nameInput.type="text"; nameInput.value=task.actionName||"";
-    nameInput.oninput=()=>{ task.actionName=nameInput.value; title.textContent=labelForTask(task); };
-    nameInput.onblur=()=>{ touchTask(task); renderClient(); };
-    nameRow.appendChild(nameInput);
-    form.appendChild(nameRow);
-
     const durationRow=el("div","field-row");
     durationRow.appendChild(el("label",null,"Duración (min)"));
     const durInput=el("input","input"); durInput.type="number"; durInput.min="5"; durInput.step="5"; durInput.value=String(task.durationMin||60);
@@ -729,6 +841,14 @@
     };
     durationRow.appendChild(durInput);
     form.appendChild(durationRow);
+
+    const nameRow=el("div","field-row");
+    nameRow.appendChild(el("label",null,"Nombre"));
+    const nameInput=el("input","input"); nameInput.type="text"; nameInput.value=task.actionName||"";
+    nameInput.oninput=()=>{ task.actionName=nameInput.value; title.textContent=labelForTask(task); };
+    nameInput.onblur=()=>{ touchTask(task); renderClient(); };
+    nameRow.appendChild(nameInput);
+    form.appendChild(nameRow);
 
     if(task.structureRelation==="milestone"){
       const timeRow=el("div","field-row");
@@ -783,22 +903,53 @@
     }
 
     const locRow=el("div","field-row");
-    locRow.appendChild(el("label",null,"Localización"));
+    locRow.appendChild(el("label",null, task.actionType===ACTION_TYPE_TRANSPORT?"Destino":"Localización"));
     const locSelect=el("select","input");
     const optEmpty=el("option",null,"- seleccionar -"); optEmpty.value=""; locSelect.appendChild(optEmpty);
     (state.locations||[]).forEach(loc=>{
       const opt=el("option",null,loc.nombre||"Localización"); opt.value=loc.id; if(loc.id===task.locationId) opt.selected=true; locSelect.appendChild(opt);
     });
-    locSelect.disabled = task.locationApplies!==true;
+    if(task.actionType===ACTION_TYPE_TRANSPORT && task.locationApplies!==true){
+      task.locationApplies = true;
+    }
+    const locationDisabled = task.actionType!==ACTION_TYPE_TRANSPORT && task.locationApplies!==true;
+    locSelect.disabled = locationDisabled;
     locSelect.onchange=()=>{ task.locationId = locSelect.value||null; touchTask(task); renderClient(); };
     locRow.appendChild(locSelect);
-    const locToggle=el("label","check");
-    const chk=el("input"); chk.type="checkbox"; chk.checked=!task.locationApplies;
-    chk.onchange=()=>{ task.locationApplies = !chk.checked; if(!task.locationApplies) task.locationId=null; touchTask(task); renderClient(); };
-    locToggle.appendChild(chk);
-    locToggle.appendChild(el("span",null,"Sin localización"));
-    locRow.appendChild(locToggle);
+    if(task.actionType!==ACTION_TYPE_TRANSPORT){
+      const locToggle=el("label","check");
+      const chk=el("input"); chk.type="checkbox"; chk.checked=!task.locationApplies;
+      chk.onchange=()=>{ task.locationApplies = !chk.checked; if(!task.locationApplies) task.locationId=null; touchTask(task); renderClient(); };
+      locToggle.appendChild(chk);
+      locToggle.appendChild(el("span",null,"Sin localización"));
+      locRow.appendChild(locToggle);
+    }else{
+      const flow=transportFlowForTask(task);
+      const originName=locationNameById(flow.origin) || "Sin origen";
+      const destName=locationNameById(flow.destination) || "Sin destino";
+      locRow.appendChild(el("div","mini",`Origen → ${originName} · Destino → ${destName}`));
+    }
     form.appendChild(locRow);
+
+    if(task.actionType===ACTION_TYPE_TRANSPORT){
+      if(!task.vehicleId){
+        const def=defaultVehicleId();
+        if(def){
+          task.vehicleId=def;
+          touchTask(task);
+        }
+      }
+      const vehicleRow=el("div","field-row");
+      vehicleRow.appendChild(el("label",null,"Vehículo"));
+      const vehicleSelect=el("select","input");
+      const vehEmpty=el("option",null,"- seleccionar -"); vehEmpty.value=""; vehicleSelect.appendChild(vehEmpty);
+      (state.vehicles||[]).forEach(veh=>{
+        const opt=el("option",null,veh.nombre||"Vehículo"); opt.value=veh.id; if(veh.id===task.vehicleId) opt.selected=true; vehicleSelect.appendChild(opt);
+      });
+      vehicleSelect.onchange=()=>{ task.vehicleId = vehicleSelect.value||null; touchTask(task); };
+      vehicleRow.appendChild(vehicleSelect);
+      form.appendChild(vehicleRow);
+    }
 
     const notesRow=el("div","field-row");
     notesRow.appendChild(el("label",null,"Notas"));
