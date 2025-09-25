@@ -160,6 +160,8 @@ table.matlist td.act{width:120px}
 .catalog-meta{display:flex;gap:.45rem;font-size:.8rem;color:#94a3b8}
 .catalog-time{font-variant-numeric:tabular-nums}
 .catalog-duration{font-style:italic}
+.catalog-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:.8rem}
+.catalog-header h3{margin:0;font-size:1rem;letter-spacing:.08em;text-transform:uppercase;color:#94a3b8}
 .relation-tag{margin-top:.1rem;font-size:.7rem;text-transform:uppercase;letter-spacing:.08em;color:#cbd5f5}
 .task-card{display:flex;flex-direction:column;gap:1.2rem;background:#0b1220;border:1px solid #1f2937;border-radius:.9rem;padding:1.2rem}
 .catalog-base{margin-top:2rem;display:flex;flex-direction:column;gap:1rem}
@@ -212,10 +214,17 @@ table.matlist td.act{width:120px}
 .staff-toggle{background:#111827;border:1px solid #1f2937;color:#e5e7eb;border-radius:.6rem;padding:.35rem .65rem;cursor:pointer}
 .staff-toggle.active{background:#047857;border-color:#059669;color:#fff}
 .empty-card{padding:2rem;border:1px dashed #1f2937;border-radius:.75rem;text-align:center;color:#94a3b8}
+.detail-list{display:flex;flex-direction:column;gap:.6rem}
+.detail-row{display:flex;flex-direction:column;gap:.25rem}
+.detail-label{font-size:.8rem;letter-spacing:.05em;text-transform:uppercase;color:#94a3b8}
+.detail-value{color:#e5e7eb;font-weight:600}
+.detail-note{font-weight:400;color:#cbd5f5;white-space:pre-wrap}
 .materials-section .mini,.staff-section .mini{color:#94a3b8}
 .check{display:flex;align-items:center;gap:.35rem;font-size:.85rem;color:#cbd5f5}
 .task-actions{margin-top:auto}
 .task-actions .btn{width:100%}
+.timeline-card.readonly{cursor:default}
+.timeline-card.readonly:hover{border-color:#1f2937}
 
 @media (max-width:1100px){
   .client-layout{grid-template-columns:1fr}
