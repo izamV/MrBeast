@@ -1069,6 +1069,14 @@
         lockMark(tr, !!t.locked);
       });
     cont.appendChild(tbl);
+
+    const baseWrap=el("div","catalog-base");
+    baseWrap.appendChild(el("h3",null,"Base (Horario del cliente)"));
+    baseWrap.appendChild(el("div","mini","Gestiona los hitos y tareas base sin salir del catálogo."));
+    const mount=el("div","catalog-base-view");
+    baseWrap.appendChild(mount);
+    cont.appendChild(baseWrap);
+    if(typeof window.setCatalogClientTarget==="function"){ window.setCatalogClientTarget(mount); }
   };
 
   window.openCatMat = (cont)=>{
@@ -1452,6 +1460,7 @@
     showOnly("catalogView");
     const cont=document.getElementById("catalogView"); cont.innerHTML="";
     cont.appendChild(el("h3",null,"Catálogos"));
+    if(typeof window.setCatalogClientTarget==="function"){ window.setCatalogClientTarget(null); }
     if(which==="loc") openCatLoc(cont);
     if(which==="task") openCatTask(cont);
     if(which==="mat") openCatMat(cont);
