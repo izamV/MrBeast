@@ -847,6 +847,191 @@
     return "Sin datos";
   };
 
+  const PRETASK_CANCEL = Symbol("pretaskCancel");
+
+  const isPretask = (t)=>t && t.structureRelation === "pre";
+
+  const collectPretaskLevels = (task)=>{
+    const result=[[],[],[]];
+    if(!task) return result;
+    const level1=getTaskChildren(task.id).filter(isPretask);
+    result[0]=level1.slice();
+    const level2=[];
+    level1.forEach(parent=>{
+      getTaskChildren(parent.id).filter(isPretask).forEach(child=>{
+        level2.push(child);
+      });
+    });
+    result[1]=level2.slice();
+    const level3=[];
+    level2.forEach(parent=>{
+      getTaskChildren(parent.id).filter(isPretask).forEach(child=>{
+        level3.push(child);
+      });
+    });
+    result[2]=level3.slice();
+    return result;
+  };
+
+  const promptPretaskName = (level)=>{
+    while(true){
+      const resp=window.prompt(`Nombre de la pretarea nivel ${level}`);
+      if(resp==null) return PRETASK_CANCEL;
+      const value=String(resp).trim();
+      if(value) return value;
+      alert("Introduce un nombre válido para la pretarea.");
+    }
+  };
+
+  const promptPretaskDuration = ()=>{
+    while(true){
+      const resp=window.prompt("Duración en minutos", "60");
+      if(resp==null) return PRETASK_CANCEL;
+      const value=Math.max(5, Math.round(Number(resp)));
+      if(Number.isFinite(value)) return value;
+      alert("Introduce una duración válida en minutos.");
+    }
+  };
+
+  const promptPretaskLimit = (label)=>{
+    while(true){
+      const resp=window.prompt(label, "");
+      if(resp==null) return PRETASK_CANCEL;
+      const str=String(resp).trim();
+      if(!str) return null;
+      const value=window.toMin ? window.toMin(str) : parseTimeInput(str);
+      if(Number.isFinite(value)) return value;
+      alert("Usa el formato HH:MM para definir el límite.");
+    }
+  };
+
+  const promptPretaskParent = (level, parents)=>{
+    if(level===1) return parents[0] || null;
+    const options=(parents||[]).slice();
+    if(!options.length){
+      alert("Primero crea una pretarea del nivel inferior.");
+      return null;
+    }
+    if(options.length===1) return options[0];
+    const lines=options.map((opt,idx)=>`${idx+1}. ${labelForTask(opt)}`).join("\n");
+    while(true){
+      const resp=window.prompt(`Selecciona la tarea del nivel ${level-1} a vincular:\n${lines}`);
+      if(resp==null) return PRETASK_CANCEL;
+      const idx=Number(resp)-1;
+      if(Number.isInteger(idx) && idx>=0 && idx<options.length) return options[idx];
+      alert("Selecciona un número válido de la lista.");
+    }
+  };
+
+  const createPretaskForLevel = (rootTask, level, parents)=>{
+    if(!rootTask) return;
+    const parentList = level===1 ? [rootTask] : (parents||[]);
+    if(level>1 && !parentList.length){
+      alert("Primero crea una pretarea del nivel inferior.");
+      return;
+    }
+    const name=promptPretaskName(level);
+    if(name===PRETASK_CANCEL) return;
+    const duration=promptPretaskDuration();
+    if(duration===PRETASK_CANCEL) return;
+    const lower=promptPretaskLimit("Límite inferior (HH:MM)");
+    if(lower===PRETASK_CANCEL) return;
+    const upper=promptPretaskLimit("Límite superior (HH:MM)");
+    if(upper===PRETASK_CANCEL) return;
+    const parent=promptPretaskParent(level, parentList);
+    if(parent===PRETASK_CANCEL || !parent) return;
+    const task=createTask({ parentId: parent.id, relation:"pre" });
+    task.actionName = name;
+    task.durationMin = duration;
+    task.limitEarlyMin = lower;
+    task.limitLateMin = upper;
+    touchTask(task);
+    selectTask(task.id);
+    renderClient();
+  };
+
+  const renderPretaskRow = (rootTask, level, tasks, parents)=>{
+    const row=el("div","pretask-row");
+    row.dataset.level=String(level);
+    const head=el("div","pretask-row-head");
+    head.appendChild(el("span","pretask-row-title",`Nivel ${level}`));
+    const controls=el("div","pretask-controls");
+    const createBtn=el("button","btn small","Crear");
+    createBtn.onclick=()=> createPretaskForLevel(rootTask, level, parents);
+    if(level>1 && !(parents&&parents.length)) createBtn.disabled=true;
+    controls.appendChild(createBtn);
+    head.appendChild(controls);
+    row.appendChild(head);
+    const body=el("div","pretask-row-body");
+    if(!tasks.length){
+      body.appendChild(el("div","nexo-empty","Sin tareas"));
+    }else{
+      const list=el("div","pretask-list");
+      const sorted=tasks.slice().sort((a,b)=>labelForTask(a).localeCompare(labelForTask(b)));
+      sorted.forEach(pre=>{
+        const card=el("div","pretask-card");
+        const item=el("button","nexo-item","");
+        if(!isTaskComplete(pre)) item.classList.add("pending");
+        if(state.project.view.selectedTaskId===pre.id) item.classList.add("active");
+        item.onclick=()=>{ selectTask(pre.id); renderClient(); };
+        item.appendChild(el("div","nexo-name",labelForTask(pre)));
+        item.appendChild(el("div","mini",relationInfo(pre)));
+        card.appendChild(item);
+        if(level>1){
+          const link=el("label","pretask-link");
+          link.appendChild(el("span",null,"Vinculada a"));
+          const select=el("select","pretask-link-select");
+          const parentOptions=(parents||[]).slice().sort((a,b)=>labelForTask(a).localeCompare(labelForTask(b)));
+          const optEmpty=el("option",null,"- seleccionar -"); optEmpty.value=""; select.appendChild(optEmpty);
+          parentOptions.forEach(parent=>{
+            const opt=el("option",null,labelForTask(parent));
+            opt.value=parent.id;
+            if(pre.structureParentId===parent.id) opt.selected=true;
+            select.appendChild(opt);
+          });
+          if(!parentOptions.some(parent=>parent.id===pre.structureParentId)){
+            select.value="";
+          }
+          select.onchange=()=>{
+            const val=select.value;
+            if(!val){
+              alert("Selecciona una tarea del nivel inferior para vincular.");
+              select.value=pre.structureParentId || "";
+              return;
+            }
+            pre.structureParentId = val;
+            touchTask(pre);
+            renderClient();
+          };
+          link.appendChild(select);
+          card.appendChild(link);
+        }else{
+          const info=el("div","pretask-link muted","Vinculada a la tarea principal");
+          card.appendChild(info);
+        }
+        list.appendChild(card);
+      });
+      body.appendChild(list);
+    }
+    row.appendChild(body);
+    return row;
+  };
+
+  const renderPretaskArea = (task)=>{
+    const area=el("div","nexo-area nexo-top");
+    area.dataset.relation="pre";
+    const head=el("div","nexo-head");
+    head.appendChild(el("h4",null,"Pretareas"));
+    area.appendChild(head);
+    const [level1, level2, level3]=collectPretaskLevels(task);
+    const grid=el("div","pretask-grid");
+    grid.appendChild(renderPretaskRow(task,3,level3,level2));
+    grid.appendChild(renderPretaskRow(task,2,level2,level1));
+    grid.appendChild(renderPretaskRow(task,1,level1,[task]));
+    area.appendChild(grid);
+    return area;
+  };
+
   const renderNexoArea = (task, relation, label, position)=>{
     const area=el("div",`nexo-area nexo-${position}`);
     area.dataset.relation=relation;
@@ -963,7 +1148,7 @@
     center.appendChild(details);
     center.appendChild(renderStaffPicker(task));
 
-    grid.appendChild(renderNexoArea(task,"pre","Pretareas","top"));
+    grid.appendChild(renderPretaskArea(task));
     grid.appendChild(renderNexoArea(task,"parallel","Concurrencia","left"));
     grid.appendChild(center);
     grid.appendChild(renderMaterialArea(task));

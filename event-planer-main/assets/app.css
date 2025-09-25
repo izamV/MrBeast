@@ -183,6 +183,18 @@ table.matlist td.act{width:120px}
 .nexo-area[data-relation=materials]{box-shadow:inset 0 0 0 1px rgba(59,130,246,.25)}
 .nexo-head{display:flex;justify-content:space-between;align-items:center;gap:.5rem}
 .nexo-head h4{margin:0;font-size:.85rem;letter-spacing:.08em;text-transform:uppercase;color:#94a3b8}
+.pretask-grid{display:flex;flex-direction:column;gap:.75rem}
+.pretask-row{display:flex;flex-direction:column;gap:.45rem;padding-top:.55rem;border-top:1px solid rgba(148,163,184,.25)}
+.pretask-row:first-child{padding-top:0;border-top:none}
+.pretask-row-head{display:flex;justify-content:space-between;align-items:center;gap:.5rem}
+.pretask-row-title{font-size:.75rem;letter-spacing:.1em;text-transform:uppercase;color:#e9d5ff}
+.pretask-controls{display:flex;gap:.4rem}
+.pretask-row-body{display:flex;flex-wrap:wrap;gap:.45rem}
+.pretask-list{display:flex;flex-wrap:wrap;gap:.45rem;width:100%}
+.pretask-card{display:flex;flex-direction:column;gap:.4rem;min-width:180px;max-width:100%}
+.pretask-card .nexo-item{width:100%}
+.pretask-link{display:flex;align-items:center;gap:.4rem;font-size:.75rem;color:#94a3b8}
+.pretask-link select{flex:1;background:#111827;border:1px solid #1f2937;color:#e5e7eb;border-radius:.5rem;padding:.2rem .35rem;font-size:.75rem}
 .nexo-list{display:flex;flex-wrap:wrap;gap:.45rem}
 .nexo-item{display:flex;flex-direction:column;gap:.2rem;align-items:flex-start;background:#111827;border:1px solid #1f2937;border-radius:.65rem;padding:.45rem .6rem;cursor:pointer;max-width:100%}
 .nexo-item .mini{color:#94a3b8;font-size:.8rem}
