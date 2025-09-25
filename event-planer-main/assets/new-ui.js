@@ -15,6 +15,8 @@
     post: "#f97316",
     parallel: "#14b8a6"
   };
+  const ACTION_TYPE_TRANSPORT = window.ACTION_TYPE_TRANSPORT || "TRANSPORTE";
+  const ACTION_TYPE_NORMAL = window.ACTION_TYPE_NORMAL || "NORMAL";
 
   let seq = 0;
   const nextId = ()=>`T_${Date.now().toString(36)}${(++seq).toString(36)}`;
@@ -30,6 +32,9 @@
     state.project.view = state.project.view || {};
     state.project.view.lastTab = "CLIENTE";
     if(typeof state.project.view.selectedTaskId === "undefined") state.project.view.selectedTaskId = null;
+    if(typeof state.project.view.timelineEditorId === "undefined") state.project.view.timelineEditorId = null;
+    state.horaInicial = state.horaInicial || {};
+    state.localizacionInicial = state.localizacionInicial || {};
   };
 
   const toNumberOrNull = (value)=>{
@@ -49,7 +54,7 @@
     if(!task.structureRelation){
       task.structureRelation = task.structureParentId ? "pre" : "milestone";
     }
-    if(typeof task.actionType === "undefined") task.actionType = window.ACTION_TYPE_NORMAL || "NORMAL";
+    if(typeof task.actionType === "undefined") task.actionType = ACTION_TYPE_NORMAL;
     task.materiales = Array.isArray(task.materiales) ? task.materiales.map(ensureMaterial) : [];
     task.assignedStaffIds = Array.isArray(task.assignedStaffIds)
       ? task.assignedStaffIds.filter(Boolean)
@@ -183,7 +188,7 @@
       assignedStaffIds: [],
       startMin: parentId?null:(state.horaInicial?.CLIENTE ?? 9*60),
       endMin: null,
-      actionType: window.ACTION_TYPE_NORMAL || "NORMAL"
+      actionType: ACTION_TYPE_NORMAL
     };
     ensureDuration(task);
     list.push(task);
@@ -231,37 +236,293 @@
     });
   };
 
-  const renderTimeline = (container, selectedId)=>{
-    container.innerHTML="";
-    const header=el("div","timeline-head");
-    header.appendChild(el("h3",null,"Horario fijo del cliente"));
-    const addBtn=el("button","btn small","+ Hito");
-    addBtn.onclick=()=>{ createTask({ relation:"milestone" }); renderClient(); };
-    header.appendChild(addBtn);
-    container.appendChild(header);
-
-    const list=el("div","timeline-track");
-    const milestones=getRootTasks().slice().sort((a,b)=>{
+  const getOrderedMilestones = ()=>{
+    return getRootTasks().slice().sort((a,b)=>{
       const sa=a.startMin??Infinity; const sb=b.startMin??Infinity;
       if(sa!==sb) return sa-sb;
       return labelForTask(a).localeCompare(labelForTask(b));
     });
+  };
+
+  const locationNameById = (id)=> (state.locations||[]).find(l=>l.id===id)?.nombre || "";
+
+  const resolveTimelineEditorId = (milestones, selectedId)=>{
+    let editorId = state.project.view.timelineEditorId || null;
+    if(editorId && !milestones.some(t=>t.id===editorId)){
+      editorId=null;
+    }
+    if(!editorId){
+      if(selectedId && milestones.some(t=>t.id===selectedId)) editorId=selectedId;
+      else editorId = milestones[0]?.id || null;
+    }
+    state.project.view.timelineEditorId = editorId;
+    return editorId;
+  };
+
+  const hasInitialTime = ()=> state.horaInicial?.CLIENTE != null;
+  const hasInitialLocation = ()=>{
+    const loc=state.localizacionInicial?.CLIENTE;
+    return !(loc==null || loc==="");
+  };
+
+  const createTimelineMilestone = ()=>{
+    const milestones=getOrderedMilestones();
+    const isFirst=!milestones.length;
+    if(isFirst && (!hasInitialTime() || !hasInitialLocation())){
+      alert("Configura la hora y el lugar inicial antes de crear la primera tarea.");
+      return null;
+    }
+    const task=createTask({ relation:"milestone" });
+    if(isFirst){
+      const start=state.horaInicial?.CLIENTE;
+      if(start!=null){
+        task.startMin=start;
+        task.endMin=start + Math.max(5, Number(task.durationMin)||60);
+      }
+      task.locationId = state.localizacionInicial?.CLIENTE || null;
+    }
+    touchTask(task);
+    state.project.view.timelineEditorId = task.id;
+    return task;
+  };
+
+  const buildInitialConfig = ()=>{
+    const wrap=el("div","timeline-empty-config");
+    const locField=el("div","field-row");
+    locField.appendChild(el("label",null,"Lugar inicial"));
+    const locSelect=el("select","input");
+    const optEmpty=el("option",null,"- seleccionar -"); optEmpty.value=""; locSelect.appendChild(optEmpty);
+    (state.locations||[]).forEach(loc=>{
+      const opt=el("option",null,loc.nombre||"Localización"); opt.value=loc.id; if(String(loc.id)===String(state.localizacionInicial?.CLIENTE)) opt.selected=true; locSelect.appendChild(opt);
+    });
+    locSelect.onchange=()=>{
+      state.localizacionInicial = state.localizacionInicial || {};
+      state.localizacionInicial.CLIENTE = locSelect.value || null;
+      touch();
+      renderClient();
+    };
+    locField.appendChild(locSelect);
+
+    const timeField=el("div","field-row");
+    timeField.appendChild(el("label",null,"Hora inicial"));
+    const timeInput=el("input","input");
+    timeInput.type="time";
+    timeInput.value=formatTimeValue(state.horaInicial?.CLIENTE);
+    timeInput.onchange=()=>{
+      const v=parseTimeInput(timeInput.value);
+      if(v==null){
+        delete state.horaInicial.CLIENTE;
+      }else{
+        state.horaInicial.CLIENTE=v;
+      }
+      touch();
+      renderClient();
+    };
+    timeField.appendChild(timeInput);
+
+    wrap.appendChild(locField);
+    wrap.appendChild(timeField);
+    wrap.appendChild(el("div","timeline-hint","Define el punto de partida del cliente antes de crear la primera tarea."));
+    return wrap;
+  };
+
+  const updateTimelineDuration = (task, nextDuration)=>{
+    if(!task) return false;
+    applyTaskDefaults(task);
+    const current=Math.max(5, Number(task.durationMin)||60);
+    const desired=Math.max(5, Math.round(Number(nextDuration)||current));
+    if(desired===current) return false;
+    const delta=desired-current;
+    task.durationMin=desired;
+    if(task.startMin!=null){
+      task.endMin = task.startMin + desired;
+    }else if(task.endMin!=null){
+      task.startMin = task.endMin - desired;
+    }
+    const ordered=getOrderedMilestones();
+    let shift=false;
+    ordered.forEach(item=>{
+      if(item.id===task.id){
+        shift=true;
+        return;
+      }
+      if(!shift) return;
+      if(item.startMin!=null) item.startMin += delta;
+      if(item.endMin!=null) item.endMin += delta;
+      ensureDuration(item);
+    });
+    ensureDuration(task);
+    syncStaffSessions();
+    touch();
+    return true;
+  };
+
+  const buildTimelineEditor = (task)=>{
+    const wrap=el("div","timeline-editor");
+    const head=el("div","timeline-editor-head");
+    head.appendChild(el("h4",null,"Edición rápida"));
+    const range=(task.startMin!=null && task.endMin!=null)
+      ? `${toHHMM(task.startMin)} – ${toHHMM(task.endMin)}`
+      : "Sin horario";
+    head.appendChild(el("span","timeline-editor-range",range));
+    wrap.appendChild(head);
+
+    const body=el("div","timeline-editor-body");
+
+    const nameRow=el("div","timeline-field");
+    nameRow.appendChild(el("label",null,"Nombre de la tarea"));
+    const nameInput=el("input","input"); nameInput.type="text"; nameInput.value=task.actionName||"";
+    nameInput.oninput=()=>{ task.actionName = nameInput.value; };
+    nameInput.onblur=()=>{ touchTask(task); renderClient(); };
+    nameRow.appendChild(nameInput);
+    body.appendChild(nameRow);
+
+    const typeRow=el("div","timeline-field inline");
+    const typeLabel=el("label",null,"Tipo de tarea");
+    const switchWrap=el("label","pill-switch");
+    const normalLabel=el("span","pill-label","Normal");
+    const toggleInput=el("input"); toggleInput.type="checkbox"; toggleInput.checked = task.actionType===ACTION_TYPE_TRANSPORT;
+    const toggleKnob=el("span","pill-toggle");
+    const transportLabel=el("span","pill-label","Transporte");
+    const updateToggleState = ()=>{
+      if(toggleInput.checked){
+        transportLabel.classList.add("active");
+        normalLabel.classList.remove("active");
+      }else{
+        normalLabel.classList.add("active");
+        transportLabel.classList.remove("active");
+      }
+    };
+    toggleInput.onchange=()=>{
+      task.actionType = toggleInput.checked ? ACTION_TYPE_TRANSPORT : ACTION_TYPE_NORMAL;
+      updateToggleState();
+      touchTask(task);
+      state.project.view.timelineEditorId = task.id;
+      renderClient();
+    };
+    updateToggleState();
+    switchWrap.appendChild(normalLabel);
+    switchWrap.appendChild(toggleInput);
+    switchWrap.appendChild(toggleKnob);
+    switchWrap.appendChild(transportLabel);
+    typeRow.appendChild(typeLabel);
+    typeRow.appendChild(switchWrap);
+    body.appendChild(typeRow);
+
+    const locRow=el("div","timeline-field");
+    const locLabel=el("label",null, toggleInput.checked?"Destino":"Localización");
+    const destSelect=el("select","input");
+    const destEmpty=el("option",null,"- seleccionar -"); destEmpty.value=""; destSelect.appendChild(destEmpty);
+    (state.locations||[]).forEach(loc=>{
+      const opt=el("option",null,loc.nombre||"Localización"); opt.value=loc.id; if(String(loc.id)===String(task.locationId)) opt.selected=true; destSelect.appendChild(opt);
+    });
+    destSelect.disabled = !toggleInput.checked;
+    destSelect.onchange=()=>{
+      task.locationId = destSelect.value || null;
+      touchTask(task);
+      state.project.view.timelineEditorId = task.id;
+      renderClient();
+    };
+    const locHint=el("div","timeline-hint","Activa transporte para seleccionar un destino.");
+    const updateLocationState = ()=>{
+      destSelect.disabled = !toggleInput.checked;
+      locLabel.textContent = toggleInput.checked?"Destino":"Localización";
+      locHint.style.display = toggleInput.checked?"none":"";
+    };
+    updateLocationState();
+    toggleInput.addEventListener("change", updateLocationState);
+    locRow.appendChild(locLabel);
+    locRow.appendChild(destSelect);
+    locRow.appendChild(locHint);
+    body.appendChild(locRow);
+
+    const durationRow=el("div","timeline-duration");
+    durationRow.appendChild(el("span","duration-label","Duración"));
+    const durationControls=el("div","duration-controls");
+    const minus=el("button","btn icon","−5");
+    minus.onclick=()=>{
+      const next=Math.max(5, (Number(task.durationMin)||60) - 5);
+      if(updateTimelineDuration(task,next)){
+        state.project.view.timelineEditorId = task.id;
+        renderClient();
+      }
+    };
+    const value=el("span","duration-value",`${Math.max(5, Number(task.durationMin)||60)} min`);
+    const plus=el("button","btn icon","+5");
+    plus.onclick=()=>{
+      const next=Math.max(5, (Number(task.durationMin)||60) + 5);
+      if(updateTimelineDuration(task,next)){
+        state.project.view.timelineEditorId = task.id;
+        renderClient();
+      }
+    };
+    durationControls.appendChild(minus);
+    durationControls.appendChild(value);
+    durationControls.appendChild(plus);
+    durationRow.appendChild(durationControls);
+    body.appendChild(durationRow);
+
+    wrap.appendChild(body);
+    return wrap;
+  };
+
+  const renderTimeline = (container, selectedId)=>{
+    container.innerHTML="";
+    const header=el("div","timeline-head");
+    header.appendChild(el("h3",null,"Horario fijo del cliente"));
+    const addBtn=el("button","btn small","Crear tarea");
+    const handleCreate=()=>{
+      const task=createTimelineMilestone();
+      if(task){
+        selectTask(task.id);
+        renderClient();
+      }
+    };
+    addBtn.onclick=handleCreate;
+    header.appendChild(addBtn);
+    container.appendChild(header);
+
+    const milestones=getOrderedMilestones();
     if(!milestones.length){
-      list.appendChild(el("div","timeline-empty","No hay acciones fijas configuradas."));
+      addBtn.disabled = !hasInitialTime() || !hasInitialLocation();
     }else{
+      addBtn.disabled = false;
+    }
+
+    const list=el("div","timeline-track");
+    if(!milestones.length){
+      list.appendChild(el("div","timeline-empty","Todavía no hay tareas en el horario."));
+    }else{
+      const editorId = resolveTimelineEditorId(milestones, selectedId);
       milestones.forEach(task=>{
         const card=el("button","timeline-card");
-        if(task.id===selectedId) card.classList.add("active");
-        const time=task.startMin!=null ? toHHMM(task.startMin) : "Sin hora";
+        if(task.id===editorId) card.classList.add("active");
+        const hasRange=(task.startMin!=null && task.endMin!=null);
+        const time=hasRange ? `${toHHMM(task.startMin)} – ${toHHMM(task.endMin)}` : (task.startMin!=null ? toHHMM(task.startMin) : "Sin hora");
         card.appendChild(el("div","time",time));
         card.appendChild(el("div","title",labelForTask(task)));
-        const locName=(state.locations||[]).find(l=>l.id===task.locationId)?.nombre || "";
-        if(locName) card.appendChild(el("div","mini",locName));
-        card.onclick=()=>{ selectTask(task.id); renderClient(); };
+        const locName=locationNameById(task.locationId) || "Sin localización";
+        card.appendChild(el("div","mini",locName));
+        card.onclick=()=>{
+          selectTask(task.id);
+          state.project.view.timelineEditorId = task.id;
+          renderClient();
+        };
         list.appendChild(card);
       });
     }
     container.appendChild(list);
+
+    if(!milestones.length){
+      state.project.view.timelineEditorId = null;
+      container.appendChild(buildInitialConfig());
+    }else{
+      const editorId = resolveTimelineEditorId(milestones, selectedId);
+      const editorTask = editorId ? milestones.find(t=>t.id===editorId) : null;
+      if(editorTask){
+        container.appendChild(buildTimelineEditor(editorTask));
+      }
+    }
   };
 
   const renderCatalog = (container, tasks, selectedId)=>{
