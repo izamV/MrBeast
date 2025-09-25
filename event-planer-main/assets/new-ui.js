@@ -183,6 +183,44 @@
     touch();
   };
 
+  const defaultTimelineStart = ()=> state.horaInicial?.CLIENTE ?? 9*60;
+
+  const ensureSequentialMilestonesFrom = (task, list)=>{
+    if(!task || task.structureParentId || task.structureRelation !== "milestone") return;
+    const roots = list.filter(item=>!item.structureParentId && item.structureRelation === "milestone");
+    const index = roots.findIndex(item=>item.id===task.id);
+    if(index === -1) return;
+    const baseStart = defaultTimelineStart();
+    let previousEnd = baseStart;
+    if(index > 0){
+      const prev = roots[index-1];
+      applyTaskDefaults(prev);
+      ensureDuration(prev);
+      if(prev.endMin != null){
+        previousEnd = prev.endMin;
+      }else if(prev.startMin != null){
+        const prevDuration = Math.max(5, Number(prev.durationMin)||60);
+        previousEnd = prev.startMin + prevDuration;
+      }
+    }
+    const duration = Math.max(5, Number(task.durationMin)||60);
+    task.durationMin = duration;
+    task.startMin = previousEnd;
+    task.endMin = task.startMin + duration;
+    ensureDuration(task);
+    let cursor = task.endMin != null ? task.endMin : (task.startMin != null ? task.startMin + duration : previousEnd);
+    for(let i=index+1;i<roots.length;i++){
+      const item = roots[i];
+      applyTaskDefaults(item);
+      const itemDuration = Math.max(5, Number(item.durationMin)||60);
+      item.durationMin = itemDuration;
+      item.startMin = cursor;
+      item.endMin = cursor + itemDuration;
+      ensureDuration(item);
+      cursor = item.endMin != null ? item.endMin : (item.startMin != null ? item.startMin + itemDuration : cursor);
+    }
+  };
+
   const createTask = ({ parentId=null, relation=null }={})=>{
     const list=getTaskList();
     const task={
@@ -221,6 +259,7 @@
       }
     }
     list.splice(insertIndex, 0, task);
+    ensureSequentialMilestonesFrom(task, list);
     touchTask(task);
     state.project.view.selectedTaskId = task.id;
     return task;
