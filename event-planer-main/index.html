@@ -1,0 +1,68 @@
+﻿<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <title>EventPlan - Editor</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="stylesheet" href="./assets/app.css">
+</head>
+<body>
+  <div class="topbar">
+    <button id="newBtn" class="btn">Nuevo proyecto</button>
+    <input id="openFile" type="file" accept=".eventplan.json" style="display:none">
+    <button id="openBtn" class="btn">Abrir (.eventplan.json)</button>
+    <button id="saveBtn" class="btn">Guardar como...</button>
+    <div id="status" class="mini" style="margin-left:auto">Listo</div>
+  </div>
+
+  <div class="grid">
+    <aside class="sidebar">
+      <div class="section">
+        <h3>Proyecto</h3>
+        <div class="field"><label>Nombre</label><input id="pNombre" class="input" placeholder="Nombre"></div>
+        <div class="field"><label>Fecha (un dia)</label><input id="pFecha" class="input" placeholder="aaaa-mm-dd"></div>
+        <div class="field"><label>Zona horaria</label><input id="pTz" class="input" placeholder="Europe/Madrid"></div>
+        <div class="mini">Construye el horario desde el catálogo de hitos y tareas. Asigna staff desde cada tarjeta.</div>
+      </div>
+
+      <div class="section">
+        <h3>Personas</h3>
+        <div class="row">
+          <input id="newStaff" class="input" placeholder="Anadir STAFF...">
+          <button id="addStaff" class="btn">Anadir</button>
+        </div>
+        <div id="staffList" class="vlist"></div>
+      </div>
+
+      <div class="section">
+        <h3>Acciones y catalogos</h3>
+        <button id="catLoc" class="btn">Catalogo: Localizaciones</button>
+        <button id="catTask" class="btn">Catalogo: Tareas</button>
+        <button id="catMat" class="btn">Catalogo: Materiales</button>
+        <button id="catVeh" class="btn">Catalogo: Vehiculos</button>
+      </div>
+
+      <div class="section">
+        <h3>Resultados</h3>
+        <button id="resGantt" class="btn">Horarios (Gantt)</button>
+        <button id="resMats" class="btn">Materiales</button>
+        <button id="resMap" class="btn">Mapa</button>
+      </div>
+    </aside>
+
+    <main class="panel">
+      <div class="tabs" id="personTabs"></div>
+      <div id="clienteView"></div>
+      <div id="catalogView" style="display:none"></div>
+      <div id="resultView" style="display:none">
+        <div id="ganttView" style="display:none"></div>
+        <div id="matsView" style="display:none"></div>
+        <div id="mapCanvas" style="display:none"></div>
+      </div>
+    </main>
+  </div>
+
+  <script src="./assets/app.bundle.js"></script>
+  <script src="./assets/new-ui.js"></script>
+</body>
+</html>
