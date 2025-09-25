@@ -608,62 +608,19 @@
     return wrap;
   };
 
-  const renderTimeline = (container, selectedId)=>{
+  const renderTimeline = (container)=>{
     container.innerHTML="";
     const header=el("div","timeline-head");
     header.appendChild(el("h3",null,"Horario fijo del cliente"));
-    const selectedTask = selectedId ? getTaskById(selectedId) : null;
-    const addBtn=el("button","btn small","Crear tarea");
-    const handleCreate=()=>{
-      const task=createTimelineMilestone();
-      if(task){
-        selectTask(task.id);
-        renderClient();
-      }
-    };
-    addBtn.onclick=handleCreate;
-    header.appendChild(addBtn);
-    const deleteBtn=el("button","btn small danger","Eliminar tarea");
-    const handleDelete=()=>{
-      if(!selectedTask || selectedTask.structureRelation!=="milestone") return;
-      if(!confirm("¿Eliminar esta tarea y sus dependientes?")) return;
-      const parentId=selectedTask.structureParentId;
-      const deletedId=selectedTask.id;
-      deleteTask(deletedId);
-      let nextSelection=null;
-      if(parentId){
-        nextSelection=parentId;
-      }else{
-        const remaining=getOrderedMilestones();
-        nextSelection=remaining[0]?.id || null;
-      }
-      selectTask(nextSelection);
-      if(state.project.view.timelineEditorId===deletedId){
-        const nextTask = nextSelection ? getTaskById(nextSelection) : null;
-        state.project.view.timelineEditorId = nextTask && nextTask.structureRelation==="milestone" ? nextTask.id : null;
-      }
-      renderClient();
-    };
-    deleteBtn.onclick=handleDelete;
-    deleteBtn.disabled = !(selectedTask && selectedTask.structureRelation==="milestone");
-    header.appendChild(deleteBtn);
     container.appendChild(header);
 
     const milestones=getOrderedMilestones();
-    if(!milestones.length){
-      addBtn.disabled = !hasInitialTime() || !hasInitialLocation();
-    }else{
-      addBtn.disabled = false;
-    }
-
     const list=el("div","timeline-track");
     if(!milestones.length){
       list.appendChild(el("div","timeline-empty","Todavía no hay tareas en el horario."));
     }else{
-      const editorId = resolveTimelineEditorId(milestones, selectedId);
       milestones.forEach(task=>{
-        const card=el("button","timeline-card");
-        if(task.id===editorId) card.classList.add("active");
+        const card=el("div","timeline-card readonly");
         const hasRange=(task.startMin!=null && task.endMin!=null);
         const time=hasRange ? `${toHHMM(task.startMin)} – ${toHHMM(task.endMin)}` : (task.startMin!=null ? toHHMM(task.startMin) : "Sin hora");
         card.appendChild(el("div","time",time));
@@ -678,104 +635,80 @@
           subtitle=locationNameById(task.locationId) || "Sin localización";
         }
         card.appendChild(el("div","mini",subtitle));
-        card.onclick=()=>{
-          selectTask(task.id);
-          state.project.view.timelineEditorId = task.id;
-          renderClient();
-        };
         list.appendChild(card);
       });
     }
     container.appendChild(list);
 
-    if(!milestones.length){
-      state.project.view.timelineEditorId = null;
-      container.appendChild(buildInitialConfig());
-    }else{
-      const editorId = resolveTimelineEditorId(milestones, selectedId);
-      const editorTask = editorId ? milestones.find(t=>t.id===editorId) : null;
-      if(editorTask){
-        container.appendChild(buildTimelineEditor(editorTask));
-      }
-    }
+    state.project.view.timelineEditorId = null;
   };
 
   const renderCatalog = (container, tasks, selectedId)=>{
     container.innerHTML="";
-    const toolbar=el("div","catalog-toolbar");
-    const addBtn=el("button","btn primary full","+ Nuevo hito" );
-    addBtn.onclick=()=>{ createTask({relation:"milestone"}); renderClient(); };
-    toolbar.appendChild(addBtn);
-    container.appendChild(toolbar);
+    const section=el("div","catalog-section");
+    section.appendChild(el("div","catalog-title","Tareas del cliente"));
+    const listWrap=el("div","catalog-list");
+    const items=sortedTasks(tasks);
+    if(!items.length){
+      listWrap.appendChild(el("div","mini muted","Sin tareas"));
+    }else{
+      items.forEach(task=>{
+        const item=el("button","catalog-item","");
+        if(task.id===selectedId) item.classList.add("active");
+        item.onclick=()=>{ selectTask(task.id); renderClient(); };
 
-    const sections=[
-      { key:"pending", title:"Acciones con datos pendientes", filter:(t)=>!isTaskComplete(t) },
-      { key:"complete", title:"Acciones completas", filter:(t)=>isTaskComplete(t) }
-    ];
+        const title=el("div","catalog-name",labelForTask(task));
+        item.appendChild(title);
+        const relationLabel=RELATION_LABEL[task.structureRelation] || "Tarea";
+        item.appendChild(el("span","relation-tag",relationLabel));
 
-    sections.forEach(section=>{
-      const sec=el("div","catalog-section");
-      sec.appendChild(el("div","catalog-title",section.title));
-      const list=sortedTasks(tasks.filter(section.filter));
-      if(!list.length){
-        sec.appendChild(el("div","mini muted","Sin tareas"));
-      }else{
-        const grid=el("div","catalog-grid");
-        list.forEach(task=>{
-          const item=el("button","catalog-item","");
-          if(task.id===selectedId) item.classList.add("active");
-          item.onclick=()=>{ selectTask(task.id); renderClient(); };
+        const meta=el("div","catalog-meta");
+        const time=task.startMin!=null ? toHHMM(task.startMin) : "Sin hora";
+        const end=task.endMin!=null ? toHHMM(task.endMin) : null;
+        const range=end ? `${time} – ${end}` : time;
+        meta.appendChild(el("span","catalog-time",range));
+        const duration=task.durationMin!=null ? `${task.durationMin} min` : "Sin duración";
+        meta.appendChild(el("span","catalog-duration",duration));
+        item.appendChild(meta);
 
-          const title=el("div","catalog-name",labelForTask(task));
-          item.appendChild(title);
-          const relationLabel=RELATION_LABEL[task.structureRelation] || "Tarea";
-          item.appendChild(el("span","relation-tag",relationLabel));
-          const meta=el("div","catalog-meta");
-          const time=task.startMin!=null ? toHHMM(task.startMin) : "Sin hora";
-          meta.appendChild(el("span","catalog-time",time));
-          const duration=task.durationMin!=null ? `${task.durationMin} min` : "Sin duración";
-          meta.appendChild(el("span","catalog-duration",duration));
-          item.appendChild(meta);
+        const locationLabel=task.actionType===ACTION_TYPE_TRANSPORT
+          ? (()=>{
+              const flow=transportFlowForTask(task);
+              const originName=locationNameById(flow.origin) || "Sin origen";
+              const destName=locationNameById(flow.destination) || "Sin destino";
+              return `${originName} → ${destName}`;
+            })()
+          : (locationNameById(task.locationId) || "Sin localización");
+        item.appendChild(el("div","mini",locationLabel));
 
-          const path=getBreadcrumb(task);
-          if(path.length>1){
-            const trail=path.slice(0,-1).map(node=>labelForTask(node)).join(" · ");
-            item.appendChild(el("div","mini muted",trail));
-          }
-          grid.appendChild(item);
-        });
-        sec.appendChild(grid);
-      }
-      container.appendChild(sec);
-    });
+        const path=getBreadcrumb(task);
+        if(path.length>1){
+          const trail=path.slice(0,-1).map(node=>labelForTask(node)).join(" · ");
+          item.appendChild(el("div","mini muted",trail));
+        }
+        listWrap.appendChild(item);
+      });
+    }
+    section.appendChild(listWrap);
+    container.appendChild(section);
   };
 
   const renderMaterials = (task)=>{
     const wrap=el("div","materials-section");
     wrap.appendChild(el("h4",null,"Materiales"));
-    const table=el("div","materials-list");
+    const table=el("div","materials-list readonly");
     if(!task.materiales.length){
       table.appendChild(el("div","mini muted","Sin materiales"));
-    }
-    task.materiales.forEach((mat,idx)=>{
-      const row=el("div","material-row");
-      const sel=el("select","input");
-      const opt0=el("option",null,"- seleccionar -"); opt0.value=""; sel.appendChild(opt0);
-      (state.materialTypes||[]).forEach(mt=>{
-        const opt=el("option",null,mt.nombre||"Material"); opt.value=mt.id; if(mt.id===mat.materialTypeId) opt.selected=true; sel.appendChild(opt);
+    }else{
+      task.materiales.forEach(mat=>{
+        const row=el("div","material-row readonly");
+        const materialName=(state.materialTypes||[]).find(mt=>mt.id===mat.materialTypeId)?.nombre || "Material sin definir";
+        row.appendChild(el("span","material-label",materialName));
+        row.appendChild(el("span","material-qty",`${mat.cantidad||0}`));
+        table.appendChild(row);
       });
-      sel.onchange=()=>{ task.materiales[idx].materialTypeId = sel.value||null; touchTask(task); renderClient(); };
-      const qty=el("input","input"); qty.type="number"; qty.min="0"; qty.step="1"; qty.value=String(mat.cantidad||0);
-      qty.onchange=()=>{ task.materiales[idx].cantidad = Number(qty.value)||0; touchTask(task); };
-      const del=el("button","btn small", "Quitar");
-      del.onclick=()=>{ task.materiales.splice(idx,1); touchTask(task); renderClient(); };
-      row.appendChild(sel); row.appendChild(qty); row.appendChild(del);
-      table.appendChild(row);
-    });
-    const add=el("button","btn small", "Añadir material");
-    add.onclick=()=>{ task.materiales.push({materialTypeId:null,cantidad:0}); touchTask(task); renderClient(); };
+    }
     wrap.appendChild(table);
-    wrap.appendChild(add);
     return wrap;
   };
 
@@ -815,9 +748,6 @@
     area.dataset.relation=relation;
     const head=el("div","nexo-head");
     head.appendChild(el("h4",null,label));
-    const add=el("button","btn small","+ Añadir");
-    add.onclick=()=>{ createTask({ parentId:task.id, relation }); renderClient(); };
-    head.appendChild(add);
     area.appendChild(head);
     const children=getTaskChildren(task.id).filter(ch=>ch.structureRelation===relation);
     if(!children.length){
@@ -846,10 +776,11 @@
     return area;
   };
 
+
   const renderTaskCard = (container, task)=>{
     container.innerHTML="";
     if(!task){
-      container.appendChild(el("div","empty-card","Selecciona una tarea o crea un nuevo hito."));
+      container.appendChild(el("div","empty-card","Selecciona una tarea para ver sus detalles."));
       return;
     }
     applyTaskDefaults(task);
@@ -879,161 +810,51 @@
       if(idx===path.length-1){ btn.disabled=true; }
       btn.onclick=()=>{ selectTask(node.id); renderClient(); };
       breadcrumb.appendChild(btn);
-      if(idx<path.length-1) breadcrumb.appendChild(el("span","crumb-sep","›"));
+      if(idx<path.length-1){ breadcrumb.appendChild(el("span","crumb-sep","/")); }
     });
     center.appendChild(breadcrumb);
 
-    const form=el("div","task-form");
-    const durationRow=el("div","field-row");
-    durationRow.appendChild(el("label",null,"Duración (min)"));
-    const durInput=el("input","input"); durInput.type="number"; durInput.min="5"; durInput.step="5"; durInput.value=String(task.durationMin||60);
-    durInput.onchange=()=>{
-      const v=Math.max(5, Math.round(Number(durInput.value)||60));
-      task.durationMin=v;
-      if(task.startMin!=null){ task.endMin = task.startMin + v; }
-      touchTask(task);
-      renderClient();
+    const details=el("div","task-details");
+    const addDetail=(label,value)=>{
+      const row=el("div","task-detail");
+      row.appendChild(el("span","task-detail-label",label));
+      row.appendChild(el("span","task-detail-value",value!=null && value!=="" ? value : "Sin datos"));
+      details.appendChild(row);
     };
-    durationRow.appendChild(durInput);
-    form.appendChild(durationRow);
 
-    const nameRow=el("div","field-row");
-    nameRow.appendChild(el("label",null,"Nombre"));
-    const nameInput=el("input","input"); nameInput.type="text"; nameInput.value=task.actionName||"";
-    nameInput.oninput=()=>{ task.actionName=nameInput.value; title.textContent=labelForTask(task); };
-    nameInput.onblur=()=>{ touchTask(task); renderClient(); };
-    nameRow.appendChild(nameInput);
-    form.appendChild(nameRow);
-
-    if(task.structureRelation==="milestone"){
-      const timeRow=el("div","field-row");
-      timeRow.appendChild(el("label",null,"Hora"));
-      const timeInput=el("input","input"); timeInput.type="time"; timeInput.value=formatTimeValue(task.startMin);
-      timeInput.onchange=()=>{
-        const v=parseTimeInput(timeInput.value);
-        task.startMin=v;
-        if(v==null){ task.endMin=null; }
-        else task.endMin=v + Math.max(5, Number(task.durationMin)||60);
-        touchTask(task);
-        renderClient();
-      };
-      timeRow.appendChild(timeInput);
-      form.appendChild(timeRow);
-    }else{
-      const limitRow=el("div","field-row");
-      if(task.structureRelation==="post"){
-        limitRow.appendChild(el("label",null,"Límite tarde"));
-        const limitInput=el("input","input"); limitInput.type="time"; limitInput.value=formatTimeValue(task.limitLateMin);
-        limitInput.onchange=()=>{
-          task.limitLateMin=parseTimeInput(limitInput.value);
-          touchTask(task);
-          renderClient();
-        };
-        limitRow.appendChild(limitInput);
-      }else{
-        limitRow.appendChild(el("label",null,"Límite temprano"));
-        const limitInput=el("input","input"); limitInput.type="time"; limitInput.value=formatTimeValue(task.limitEarlyMin);
-        limitInput.onchange=()=>{
-          task.limitEarlyMin=parseTimeInput(limitInput.value);
-          touchTask(task);
-          renderClient();
-        };
-        limitRow.appendChild(limitInput);
-      }
-      form.appendChild(limitRow);
-
-      const startRow=el("div","field-row");
-      startRow.appendChild(el("label",null,"Hora exacta (opcional)"));
-      const startInput=el("input","input"); startInput.type="time"; startInput.value=formatTimeValue(task.startMin);
-      startInput.onchange=()=>{
-        const v=parseTimeInput(startInput.value);
-        task.startMin=v;
-        if(v==null){ task.endMin=null; }
-        else task.endMin=v + Math.max(5, Number(task.durationMin)||60);
-        touchTask(task);
-        renderClient();
-      };
-      startRow.appendChild(startInput);
-      form.appendChild(startRow);
+    const hasRange=(task.startMin!=null && task.endMin!=null);
+    const startText=task.startMin!=null ? toHHMM(task.startMin) : null;
+    const range=hasRange ? `${toHHMM(task.startMin)} – ${toHHMM(task.endMin)}` : (startText || "Sin horario");
+    addDetail("Horario", range);
+    if(task.durationMin!=null){
+      addDetail("Duración", `${task.durationMin} min`);
     }
-
-    const locRow=el("div","field-row");
-    locRow.appendChild(el("label",null, task.actionType===ACTION_TYPE_TRANSPORT?"Destino":"Localización"));
-    const locSelect=el("select","input");
-    const optEmpty=el("option",null,"- seleccionar -"); optEmpty.value=""; locSelect.appendChild(optEmpty);
-    (state.locations||[]).forEach(loc=>{
-      const opt=el("option",null,loc.nombre||"Localización"); opt.value=loc.id; if(loc.id===task.locationId) opt.selected=true; locSelect.appendChild(opt);
-    });
-    if(task.actionType===ACTION_TYPE_TRANSPORT && task.locationApplies!==true){
-      task.locationApplies = true;
+    if(task.structureRelation==="pre" || task.structureRelation==="parallel"){
+      addDetail("Límite temprano", task.limitEarlyMin!=null ? toHHMM(task.limitEarlyMin) : "Sin definir");
     }
-    const locationDisabled = task.actionType!==ACTION_TYPE_TRANSPORT && task.locationApplies!==true;
-    locSelect.disabled = locationDisabled;
-    locSelect.onchange=()=>{ task.locationId = locSelect.value||null; touchTask(task); renderClient(); };
-    locRow.appendChild(locSelect);
-    if(task.actionType!==ACTION_TYPE_TRANSPORT){
-      const locToggle=el("label","check");
-      const chk=el("input"); chk.type="checkbox"; chk.checked=!task.locationApplies;
-      chk.onchange=()=>{ task.locationApplies = !chk.checked; if(!task.locationApplies) task.locationId=null; touchTask(task); renderClient(); };
-      locToggle.appendChild(chk);
-      locToggle.appendChild(el("span",null,"Sin localización"));
-      locRow.appendChild(locToggle);
-    }else{
-      const flow=transportFlowForTask(task);
-      const originName=locationNameById(flow.origin) || "Sin origen";
-      const destName=locationNameById(flow.destination) || "Sin destino";
-      locRow.appendChild(el("div","mini",`Origen → ${originName} · Destino → ${destName}`));
+    if(task.structureRelation==="post"){
+      addDetail("Límite tarde", task.limitLateMin!=null ? toHHMM(task.limitLateMin) : "Sin definir");
     }
-    form.appendChild(locRow);
 
     if(task.actionType===ACTION_TYPE_TRANSPORT){
-      if(!task.vehicleId){
-        const def=defaultVehicleId();
-        if(def){
-          task.vehicleId=def;
-          touchTask(task);
-        }
-      }
-      const vehicleRow=el("div","field-row");
-      vehicleRow.appendChild(el("label",null,"Vehículo"));
-      const vehicleSelect=el("select","input");
-      const vehEmpty=el("option",null,"- seleccionar -"); vehEmpty.value=""; vehicleSelect.appendChild(vehEmpty);
-      (state.vehicles||[]).forEach(veh=>{
-        const opt=el("option",null,veh.nombre||"Vehículo"); opt.value=veh.id; if(veh.id===task.vehicleId) opt.selected=true; vehicleSelect.appendChild(opt);
-      });
-      vehicleSelect.onchange=()=>{ task.vehicleId = vehicleSelect.value||null; touchTask(task); };
-      vehicleRow.appendChild(vehicleSelect);
-      form.appendChild(vehicleRow);
+      addDetail("Tipo", "Transporte");
+      const flow=transportFlowForTask(task);
+      addDetail("Origen", locationNameById(flow.origin) || "Sin origen");
+      addDetail("Destino", locationNameById(flow.destination) || "Sin destino");
+      const vehicleName=(state.vehicles||[]).find(v=>v.id===task.vehicleId)?.nombre || "Sin asignar";
+      addDetail("Vehículo", vehicleName);
+    }else{
+      const locationText = task.locationApplies===false ? "No aplica" : (locationNameById(task.locationId) || "Sin localización");
+      addDetail("Localización", locationText);
+      addDetail("Tipo", "Normal");
     }
 
-    const notesRow=el("div","field-row");
-    notesRow.appendChild(el("label",null,"Notas"));
-    const notes=el("textarea","input"); notes.rows=4; notes.value=task.comentario||"";
-    notes.oninput=()=>{ task.comentario=notes.value; };
-    notes.onblur=()=>{ touchTask(task); };
-    notesRow.appendChild(notes);
-    form.appendChild(notesRow);
+    if((task.comentario||"").trim()){
+      addDetail("Notas", task.comentario.trim());
+    }
 
-    center.appendChild(form);
+    center.appendChild(details);
     center.appendChild(renderStaffPicker(task));
-
-    const danger=el("button","btn danger", "Eliminar tarea");
-    danger.onclick=()=>{
-      if(confirm("¿Eliminar esta tarea y sus dependientes?")){
-        const parentId=task.structureParentId;
-        deleteTask(task.id);
-        if(parentId){
-          selectTask(parentId);
-        }else{
-          const next=getTaskList()[0];
-          selectTask(next?next.id:null);
-        }
-        renderClient();
-      }
-    };
-    const actions=el("div","task-actions");
-    actions.appendChild(danger);
-    center.appendChild(actions);
 
     grid.appendChild(renderNexoArea(task,"pre","Pretareas","top"));
     grid.appendChild(renderNexoArea(task,"parallel","Concurrencia","left"));
@@ -1044,6 +865,7 @@
     editor.appendChild(grid);
     container.appendChild(editor);
   };
+
 
   const getVisibleTasks = ()=>{
     const tasks=getTaskList();
@@ -1079,7 +901,7 @@
     root.innerHTML="";
     const screen=el("div","client-screen");
     const timeline=el("div","client-timeline");
-    renderTimeline(timeline, selectedId);
+    renderTimeline(timeline);
     screen.appendChild(timeline);
     root.appendChild(screen);
 
