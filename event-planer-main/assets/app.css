@@ -186,6 +186,8 @@ table.matlist td.act{width:120px}
 .pretask-grid{display:flex;flex-direction:column;gap:.75rem}
 .pretask-links{position:absolute;inset:0;pointer-events:none}
 .pretask-link-path{stroke:rgba(168,85,247,.45);stroke-width:2;fill:none;stroke-linecap:round}
+.pretask-root-node{align-self:center;width:16px;height:16px;border-radius:999px;border:2px solid rgba(168,85,247,.65);background:#0f172a;box-shadow:0 0 0 3px rgba(168,85,247,.15);position:relative;margin-top:.25rem}
+.pretask-root-node::after{content:"";position:absolute;inset:3px;border-radius:999px;background:rgba(168,85,247,.75)}
 .pretask-row{display:flex;flex-direction:column;gap:.45rem;padding-top:.55rem;border-top:1px solid rgba(148,163,184,.25)}
 .pretask-row:first-child{padding-top:0;border-top:none}
 .pretask-row-head{display:flex;justify-content:space-between;align-items:center;gap:.5rem}

@@ -1049,20 +1049,34 @@
     if(!head) return;
     const areaRect=area.getBoundingClientRect();
     const anchors=new Map();
-    const headRect=head.getBoundingClientRect();
-    anchors.set(rootTask.id, {
-      x: headRect.left + headRect.width/2 - areaRect.left,
-      y: headRect.bottom - areaRect.top
-    });
+    const addAnchor=(taskId, rect)=>{
+      if(!rect) return;
+      anchors.set(taskId, {
+        x: rect.left + rect.width/2 - areaRect.left,
+        top: rect.top - areaRect.top,
+        bottom: rect.bottom - areaRect.top
+      });
+    };
+
+    const rootNode=area.querySelector(".pretask-root-node");
+    if(rootNode){
+      addAnchor(rootTask.id, rootNode.getBoundingClientRect());
+    }else{
+      const headRect=head.getBoundingClientRect();
+      addAnchor(rootTask.id, {
+        left: headRect.left,
+        width: headRect.width,
+        top: headRect.bottom,
+        bottom: headRect.bottom
+      });
+    }
+
     cards.forEach(card=>{
       const taskId=card.dataset.taskId;
       const item=card.querySelector(".nexo-item");
       if(!taskId || !item) return;
       const rect=item.getBoundingClientRect();
-      anchors.set(taskId, {
-        x: rect.left + rect.width/2 - areaRect.left,
-        y: rect.bottom - areaRect.top
-      });
+      addAnchor(taskId, rect);
     });
     const ns="http://www.w3.org/2000/svg";
     const svg=document.createElementNS(ns,"svg");
@@ -1074,19 +1088,23 @@
       const parentId=card.dataset.parentId;
       const taskId=card.dataset.taskId;
       if(!parentId || !taskId) return;
-      const parentPoint=anchors.get(parentId);
-      const item=card.querySelector(".nexo-item");
-      if(!parentPoint || !item) return;
-      const rect=item.getBoundingClientRect();
-      const childPoint={
-        x: rect.left + rect.width/2 - areaRect.left,
-        y: rect.top - areaRect.top
-      };
-      const startY=parentPoint.y + 2;
-      const endY=childPoint.y - 2;
+      const parentAnchor=anchors.get(parentId);
+      const childAnchor=anchors.get(taskId);
+      if(!parentAnchor || !childAnchor) return;
+      const startAnchor = parentAnchor.top <= childAnchor.top ? parentAnchor : childAnchor;
+      const endAnchor = parentAnchor.top <= childAnchor.top ? childAnchor : parentAnchor;
+      let startY = startAnchor.bottom + 2;
+      let endY = endAnchor.top - 2;
+      if(startY > endY){
+        const middle=(startY + endY)/2;
+        startY = middle;
+        endY = middle;
+      }
       const midY=(startY + endY)/2;
+      const startX = startAnchor === parentAnchor ? parentAnchor.x : childAnchor.x;
+      const endX = endAnchor === childAnchor ? childAnchor.x : parentAnchor.x;
       const path=document.createElementNS(ns,"path");
-      path.setAttribute("d", `M ${parentPoint.x} ${startY} C ${parentPoint.x} ${midY} ${childPoint.x} ${midY} ${childPoint.x} ${endY}`);
+      path.setAttribute("d", `M ${startX} ${startY} C ${startX} ${midY} ${endX} ${midY} ${endX} ${endY}`);
       path.setAttribute("class","pretask-link-path");
       svg.appendChild(path);
     });
@@ -1461,6 +1479,10 @@
     grid.appendChild(renderPretaskRow(task,2,level2,level1));
     grid.appendChild(renderPretaskRow(task,1,level1,[task]));
     area.appendChild(grid);
+
+    const rootAnchor=el("div","pretask-root-node");
+    rootAnchor.dataset.taskId = task.id;
+    area.appendChild(rootAnchor);
     schedulePretaskLinkRedraw();
     return area;
   };
