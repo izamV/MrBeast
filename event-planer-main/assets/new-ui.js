@@ -666,7 +666,16 @@
     container.innerHTML="";
     const header=el("div","timeline-head");
     header.appendChild(el("h3",null,"Horario fijo del cliente"));
-    const selectedTask = selectedId ? getTaskById(selectedId) : null;
+    let selectedTask = selectedId ? getTaskById(selectedId) : null;
+    if(selectedTask && selectedTask.structureRelation === "pre"){
+      const trail=getBreadcrumb(selectedTask);
+      const rootNode = trail[0] || null;
+      if(rootNode){
+        selectedId = rootNode.id;
+        selectedTask = rootNode;
+        state.project.view.selectedTaskId = selectedId;
+      }
+    }
     const addBtn=el("button","btn small","Crear tarea");
     const handleCreate=()=>{
       const task=createTimelineMilestone();
@@ -794,16 +803,32 @@
     header.appendChild(el("h3",null,"Tareas del cliente"));
     container.appendChild(header);
 
-    const sorted=sortedTasks(tasks);
-    if(!sorted.length){
+    const sortedRoots=sortedTasks(tasks).filter(task=>task.structureParentId==null);
+    if(!sortedRoots.length){
       container.appendChild(el("div","mini muted","Sin tareas"));
       return;
     }
 
+    let selectedTask = selectedId ? getTaskById(selectedId) : null;
+    if(selectedTask && selectedTask.structureRelation === "pre"){
+      const trail=getBreadcrumb(selectedTask);
+      const rootNode = trail[0] || null;
+      if(rootNode){
+        selectedId = rootNode.id;
+        selectedTask = rootNode;
+        state.project.view.selectedTaskId = selectedId;
+      }
+    }
+    let selectedRootId = selectedTask ? selectedTask.id : null;
+    if(selectedTask && selectedTask.structureParentId){
+      const trail=getBreadcrumb(selectedTask);
+      selectedRootId = (trail[0]||{}).id || selectedTask.id;
+    }
+
     const grid=el("div","catalog-grid");
-    sorted.forEach(task=>{
+    sortedRoots.forEach(task=>{
       const item=el("button","catalog-item","");
-      if(task.id===selectedId) item.classList.add("active");
+      if(task.id===selectedRootId) item.classList.add("active");
       item.onclick=()=>{ selectTask(task.id); renderClient(); };
 
       const title=el("div","catalog-name",labelForTask(task));
@@ -930,7 +955,7 @@
     task.limitLateMin = defaultPretaskUpper(rootTask, lower, task.durationMin);
     ensurePretaskBounds(task, rootTask);
     touchTask(task);
-    selectTask(task.id);
+    state.project.view.selectedTaskId = rootTask.id;
     state.project.view.pretaskEditorId = task.id;
     renderClient();
   };
@@ -1071,9 +1096,8 @@
 
     const item=el("button","nexo-item","");
     if(!isTaskComplete(task)) item.classList.add("pending");
-    if(state.project.view.selectedTaskId===task.id) item.classList.add("active");
+    if(isOpen) item.classList.add("active");
     item.onclick=()=>{
-      selectTask(task.id);
       state.project.view.pretaskEditorId = isOpen ? null : task.id;
       renderClient();
     };
@@ -1139,9 +1163,9 @@
       state.project.view.pretaskEditorId = null;
     }
     const grid=el("div","pretask-grid");
-    grid.appendChild(renderPretaskRow(task,3,level3,level2));
-    grid.appendChild(renderPretaskRow(task,2,level2,level1));
     grid.appendChild(renderPretaskRow(task,1,level1,[task]));
+    grid.appendChild(renderPretaskRow(task,2,level2,level1));
+    grid.appendChild(renderPretaskRow(task,3,level3,level2));
     area.appendChild(grid);
     return area;
   };
@@ -1301,7 +1325,16 @@
       selectedId=visible[0].id;
       state.project.view.selectedTaskId=selectedId;
     }
-    const selectedTask = selectedId ? getTaskById(selectedId) : null;
+    let selectedTask = selectedId ? getTaskById(selectedId) : null;
+    if(selectedTask && selectedTask.structureRelation === "pre"){
+      const trail=getBreadcrumb(selectedTask);
+      const rootNode = trail[0] || null;
+      if(rootNode){
+        selectedId = rootNode.id;
+        selectedTask = rootNode;
+        state.project.view.selectedTaskId = selectedId;
+      }
+    }
     const isCatalogMount = catalogTarget && root === catalogTarget;
     root.innerHTML="";
     const screen=el("div","client-screen");
