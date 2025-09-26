@@ -216,6 +216,7 @@ table.matlist td.act{width:120px}
 .pretask-arrow-icon{font-size:.85rem;color:#cbd5f5}
 .nexo-list{display:flex;flex-wrap:wrap;gap:.45rem}
 .nexo-item{display:flex;flex-direction:column;gap:.2rem;align-items:flex-start;background:#111827;border:1px solid #1f2937;border-radius:.65rem;padding:.45rem .6rem;cursor:pointer;max-width:100%}
+.nexo-range{color:#cbd5f5;font-size:.85rem;font-variant-numeric:tabular-nums}
 .nexo-item .mini{color:#94a3b8;font-size:.8rem}
 .nexo-item.pending{border-color:#f97316;color:#fdba74}
 .nexo-item.active{border-color:#3b82f6;color:#bfdbfe}

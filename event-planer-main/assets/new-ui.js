@@ -993,6 +993,25 @@
     return "Sin datos";
   };
 
+  const pretaskRangeLabel = (task)=>{
+    const hasLower = task.limitEarlyMinEnabled && Number.isFinite(task.limitEarlyMin);
+    const hasUpper = task.limitLateMinEnabled && Number.isFinite(task.limitLateMin);
+    if(hasLower && hasUpper){
+      const lower=toHHMM(task.limitEarlyMin);
+      const upper=toHHMM(task.limitLateMin);
+      return lower===upper ? lower : `${lower} – ${upper}`;
+    }
+    if(hasLower) return `Desde ${toHHMM(task.limitEarlyMin)}`;
+    if(hasUpper) return `Hasta ${toHHMM(task.limitLateMin)}`;
+    if(task.limitEarlyMinEnabled || task.limitLateMinEnabled) return "Sin definir";
+    return "Por defecto";
+  };
+
+  const pretaskDurationLabel = (task)=>{
+    if(Number.isFinite(task.durationMin)) return `${task.durationMin} min`;
+    return "Sin duración";
+  };
+
   const isPretask = (t)=>t && t.structureRelation === "pre";
 
   const collectPretaskLevels = (task)=>{
@@ -1267,7 +1286,11 @@
       renderClient();
     };
     item.appendChild(el("div","nexo-name",labelForTask(task)));
-    item.appendChild(el("div","mini",relationInfo(task)));
+    const rangeLabel=pretaskRangeLabel(task);
+    if(rangeLabel){
+      item.appendChild(el("div","nexo-range",rangeLabel));
+    }
+    item.appendChild(el("div","mini",pretaskDurationLabel(task)));
     card.appendChild(item);
 
     const linkRow=el("div","pretask-arrow");
