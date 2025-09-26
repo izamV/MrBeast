@@ -1137,6 +1137,10 @@
     const rows=el("div","material-rows");
     const types=ensureMaterialTypes();
     task.materiales = Array.isArray(task.materiales) ? task.materiales.map(ensureMaterial) : [];
+    const usedMaterialIds = new Set((task.materiales||[])
+      .map(mat=>mat?.materialTypeId)
+      .filter(Boolean));
+    const hasAvailableTypes = types.some(type=>!usedMaterialIds.has(type.id));
 
     if(!task.materiales.length){
       const empty=el("div","mini muted","Sin materiales asignados.");
@@ -1151,10 +1155,17 @@
         const optEmpty=el("option",null,"- seleccionar -");
         optEmpty.value="";
         select.appendChild(optEmpty);
+        const usedByOthers = new Set(task.materiales
+          .filter((other, otherIdx)=>otherIdx!==idx && other?.materialTypeId)
+          .map(other=>other.materialTypeId));
         types.forEach(type=>{
           const opt=el("option",null,type.nombre||"Material");
           opt.value=type.id;
-          if(type.id===mat.materialTypeId) opt.selected=true;
+          if(type.id===mat.materialTypeId){
+            opt.selected=true;
+          }else if(usedByOthers.has(type.id)){
+            opt.disabled=true;
+          }
           select.appendChild(opt);
         });
         select.onchange=()=>{
@@ -1178,6 +1189,13 @@
           qtyInput.value = String(val);
           touchTask(task);
         };
+        qtyInput.oninput=()=>{
+          const num = Number(qtyInput.value);
+          if(Number.isFinite(num)){
+            mat.cantidad = Math.max(0, Math.round(num));
+            touchTask(task);
+          }
+        };
         qtyInput.onchange=()=>{ commitQty(); renderClient(); };
         qtyInput.onblur=()=>{ qtyInput.value = String(normalizeQuantity(qtyInput.value)); };
         qtyWrap.appendChild(qtyInput);
@@ -1200,10 +1218,16 @@
     wrap.appendChild(rows);
 
     const addBtn=el("button","btn small full","Añadir material");
-    addBtn.disabled = !types.length;
+    addBtn.disabled = !types.length || !hasAvailableTypes;
     addBtn.onclick=()=>{
-      const defaultTypeId = (types[0]||{}).id || null;
-      const newEntry = ensureMaterial({ materialTypeId: defaultTypeId, cantidad: 1 });
+      const currentUsed = new Set((task.materiales||[])
+        .map(mat=>mat?.materialTypeId)
+        .filter(Boolean));
+      const availableType = types.find(type=>!currentUsed.has(type.id)) || null;
+      const newEntry = ensureMaterial({ materialTypeId: availableType?.id || null, cantidad: 1 });
+      if(!availableType && !hasAvailableTypes){
+        return;
+      }
       task.materiales.push(newEntry);
       touchTask(task);
       renderClient();
