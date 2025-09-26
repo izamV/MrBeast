@@ -38,6 +38,7 @@
     if(typeof state.project.view.pretaskEditorId === "undefined") state.project.view.pretaskEditorId = null;
     if(typeof state.project.view.paralleltaskEditorId === "undefined") state.project.view.paralleltaskEditorId = null;
     if(typeof state.project.view.posttaskEditorId === "undefined") state.project.view.posttaskEditorId = null;
+    if(typeof state.project.view.materialsEditorId === "undefined") state.project.view.materialsEditorId = null;
     state.horaInicial = state.horaInicial || {};
     state.localizacionInicial = state.localizacionInicial || {};
   };
@@ -1128,15 +1129,83 @@
     return Math.max(0, Math.round(num));
   };
 
+  const formatQuantityLabel = (value)=>{
+    const qty = normalizeQuantity(value);
+    const unit = qty === 1 ? "unidad" : "unidades";
+    return `${qty} ${unit}`;
+  };
+
+  const renderMaterialSummaryView = (task, types)=>{
+    const summary=el("div","material-summary-view");
+    const entries=(task.materiales||[]).map(ensureMaterial);
+    if(!entries.length){
+      summary.appendChild(el("div","mini muted","Sin materiales asignados. Pulsa \"Editar\" para añadirlos."));
+      return summary;
+    }
+
+    const table=el("table","material-summary-table");
+    const tbody=el("tbody");
+    table.appendChild(tbody);
+
+    let hasPending=false;
+    entries.forEach(mat=>{
+      const row=el("tr","material-summary-row");
+      const nameCell=el("td","material-summary-name","");
+      const qtyCell=el("td","material-summary-qty",formatQuantityLabel(mat.cantidad));
+
+      if(mat.materialTypeId){
+        const typeLabel=types.find(type=>type.id===mat.materialTypeId)?.nombre || "Material";
+        nameCell.textContent=typeLabel;
+      }else{
+        nameCell.textContent="Material sin definir";
+        row.classList.add("pending");
+        hasPending=true;
+      }
+
+      row.appendChild(nameCell);
+      row.appendChild(qtyCell);
+      tbody.appendChild(row);
+    });
+
+    summary.appendChild(table);
+
+    if(hasPending){
+      summary.appendChild(el("div","mini warn-text","Hay materiales sin tipo asignado. Completa la información desde \"Editar\"."));
+    }
+
+    summary.appendChild(el("div","mini muted","Pulsa \"Editar\" para modificar las cantidades o añadir materiales."));
+
+    return summary;
+  };
+
   const renderMaterialAssignment = (task)=>{
     const wrap=el("div","materials-editor");
     const head=el("div","nexo-head");
     head.appendChild(el("h4",null,"Materiales de la tarea"));
-    wrap.appendChild(head);
-
-    const rows=el("div","material-rows");
     const types=ensureMaterialTypes();
     task.materiales = Array.isArray(task.materiales) ? task.materiales.map(ensureMaterial) : [];
+
+    const isEditing = state.project.view.materialsEditorId === task.id;
+    const controls=el("div","material-head-controls");
+    const toggleBtn=el("button","btn small", isEditing ? "Aceptar" : "Editar");
+    toggleBtn.type="button";
+    toggleBtn.onclick=()=>{
+      state.project.view.materialsEditorId = isEditing ? null : task.id;
+      renderClient();
+    };
+    controls.appendChild(toggleBtn);
+    head.appendChild(controls);
+    wrap.appendChild(head);
+
+    if(!isEditing){
+      wrap.appendChild(renderMaterialSummaryView(task, types));
+      if(!types.length){
+        wrap.appendChild(el("div","mini muted","Crea materiales en el catálogo para poder asignarlos."));
+      }
+      return wrap;
+    }
+
+    const rows=el("div","material-rows");
     const usedMaterialIds = new Set((task.materiales||[])
       .map(mat=>mat?.materialTypeId)
       .filter(Boolean));
@@ -1218,6 +1287,7 @@
     wrap.appendChild(rows);
 
     const addBtn=el("button","btn small full","Añadir material");
+    addBtn.type="button";
     addBtn.disabled = !types.length || !hasAvailableTypes;
     addBtn.onclick=()=>{
       const currentUsed = new Set((task.materiales||[])
@@ -2550,8 +2620,12 @@
   const renderTaskCard = (container, task)=>{
     container.innerHTML="";
     if(!task){
+      state.project.view.materialsEditorId = null;
       container.appendChild(el("div","empty-card","Selecciona una tarea para ver los detalles."));
       return;
+    }
+    if(state.project.view.materialsEditorId && state.project.view.materialsEditorId !== task.id){
+      state.project.view.materialsEditorId = null;
     }
     applyTaskDefaults(task);
 

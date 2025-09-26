@@ -276,6 +276,17 @@ table.matlist td.act{width:120px}
 .materials-list{display:flex;flex-direction:column;gap:.45rem}
 .materials-area{gap:1rem}
 .materials-editor{display:flex;flex-direction:column;gap:.75rem}
+.material-head-controls{display:flex;gap:.35rem;margin-left:auto}
+.material-head-controls .btn.small{min-width:auto}
+.material-summary-view{display:flex;flex-direction:column;gap:.65rem}
+.material-summary-table{width:100%;border-collapse:separate;border-spacing:0 .4rem;font-size:.9rem}
+.material-summary-row td{padding:.5rem .75rem;background:rgba(11,18,32,.85);border:1px solid rgba(148,163,184,.2)}
+.material-summary-row td:first-child{border-radius:.6rem 0 0 .6rem}
+.material-summary-row td:last-child{text-align:right;border-radius:0 .6rem .6rem 0;font-variant-numeric:tabular-nums;color:#e2e8f0;font-weight:600}
+.material-summary-name{font-weight:600}
+.material-summary-qty{font-weight:600}
+.material-summary-row.pending .material-summary-name{color:#fca5a5}
+.warn-text{color:#fca5a5}
 .material-rows{display:flex;flex-direction:column;gap:.5rem}
 .material-row{display:grid;grid-template-columns:minmax(0,1fr) 120px auto;gap:.5rem;align-items:center;background:#0b1220;border:1px solid #1f2937;border-radius:.6rem;padding:.6rem}
 .material-field{display:flex;flex-direction:column;gap:.25rem;font-size:.85rem;color:#94a3b8}
