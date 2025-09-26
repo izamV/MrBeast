@@ -392,6 +392,29 @@
     return task.endMin;
   };
 
+  const enforceMilestoneLocations = (roots)=>{
+    if(!Array.isArray(roots) || !roots.length) return;
+    let current = state.localizacionInicial?.CLIENTE || null;
+    for(const item of roots){
+      applyTaskDefaults(item);
+      const isTransport = item.actionType === ACTION_TYPE_TRANSPORT;
+      if(isTransport){
+        if(item.locationId == null && current != null){
+          item.locationId = current;
+        }
+        if(item.locationId != null){
+          current = item.locationId;
+        }
+      }else if(item.locationApplies !== false){
+        if(current != null){
+          item.locationId = current;
+        }else if(item.locationId != null){
+          current = item.locationId;
+        }
+      }
+    }
+  };
+
   const enforceSequentialMilestones = (roots, startIndex=0)=>{
     if(!roots.length) return;
     const baseStart = defaultTimelineStart();
@@ -406,6 +429,7 @@
       item.endMin = item.startMin + duration;
       cursor = nextCursorForMilestone(item, cursor + duration);
     }
+    enforceMilestoneLocations(roots);
   };
 
   const ensureSequentialMilestonesFrom = (task, list)=>{
@@ -521,18 +545,23 @@
     let current = state.localizacionInicial?.CLIENTE || null;
     for(let i=0;i<milestones.length;i++){
       const item=milestones[i];
-      const destination = item.locationId || current;
+      const isTransport = item.actionType===ACTION_TYPE_TRANSPORT;
+      const destination = isTransport
+        ? (item.locationId || current)
+        : current;
       if(i===idx){
         return { origin: current, destination };
       }
-      if(item.actionType===ACTION_TYPE_TRANSPORT){
+      if(isTransport){
         current = destination;
-      }else if(item.locationApplies!==false){
-        current = item.locationId || current;
       }
     }
     const fallback=milestones[idx];
-    return { origin: current, destination: fallback?.locationId || current };
+    const fallbackIsTransport = fallback?.actionType===ACTION_TYPE_TRANSPORT;
+    const fallbackDestination = fallbackIsTransport
+      ? (fallback?.locationId || current)
+      : current;
+    return { origin: current, destination: fallbackDestination };
   };
 
   const transportFlowForTask = (task)=>{
@@ -595,6 +624,7 @@
     locSelect.onchange=()=>{
       state.localizacionInicial = state.localizacionInicial || {};
       state.localizacionInicial.CLIENTE = locSelect.value || null;
+      ensureSequentialMilestonesFrom(null, getTaskList());
       touch();
       renderClient();
     };
