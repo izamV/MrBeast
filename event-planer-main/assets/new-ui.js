@@ -182,6 +182,12 @@
     ensureDuration(task);
     const list=getTaskList();
     ensureSequentialMilestonesFrom(task, list);
+    if(task?.structureRelation === "milestone"){
+      refreshPretaskTreeBounds(task);
+    }else if(task?.structureRelation === "pre"){
+      const root = (getBreadcrumb(task)[0]) || null;
+      if(root) refreshPretaskTreeBounds(root);
+    }
     syncStaffSessions();
     touch();
   };
@@ -204,12 +210,12 @@
     if(mins==null) return null;
     return roundToFive(mins);
   };
-  const defaultPretaskLower = ()=> roundToFive(defaultTimelineStart());
+  const defaultPretaskLower = ()=> 0;
   const defaultPretaskUpper = (rootTask, lower, duration)=>{
-    const baseStart = Number.isFinite(rootTask?.startMin) ? rootTask.startMin : lower;
-    const maxTarget = lower + duration;
-    const upper = Math.max(lower, Math.min(baseStart, maxTarget));
-    return roundToFive(upper);
+    const latestFromRoot = Number.isFinite(rootTask?.startMin)
+      ? roundToFive(clampToDay(rootTask.startMin - duration))
+      : roundToFive(clampToDay(lower + duration));
+    return Math.max(lower, latestFromRoot);
   };
   const ensurePretaskBounds = (task, rootTask)=>{
     if(!task || task.structureRelation !== "pre") return;
@@ -217,15 +223,31 @@
     const lower = Number.isFinite(task.limitEarlyMin)
       ? roundToFive(clampToDay(task.limitEarlyMin))
       : defaultPretaskLower();
+    const defaultUpper = defaultPretaskUpper(rootTask, lower, duration);
+    const latestCap = Number.isFinite(rootTask?.startMin)
+      ? Math.max(lower, roundToFive(clampToDay(rootTask.startMin - duration)))
+      : Math.max(lower, DAY_MAX_MIN);
     let upper = Number.isFinite(task.limitLateMin)
       ? roundToFive(clampToDay(task.limitLateMin))
-      : defaultPretaskUpper(rootTask, lower, duration);
-    const maxUpper = roundToFive(clampToDay(lower + duration));
+      : defaultUpper;
+    if(!Number.isFinite(upper)) upper = defaultUpper;
+    if(upper > latestCap) upper = latestCap;
     if(upper < lower) upper = lower;
-    if(upper > maxUpper) upper = maxUpper;
     task.durationMin = duration;
     task.limitEarlyMin = lower;
     task.limitLateMin = upper;
+  };
+  const refreshPretaskTreeBounds = (rootTask)=>{
+    if(!rootTask) return;
+    const visit=(node)=>{
+      getTaskChildren(node.id).forEach(child=>{
+        if(child.structureRelation === "pre"){
+          ensurePretaskBounds(child, rootTask);
+          visit(child);
+        }
+      });
+    };
+    visit(rootTask);
   };
 
   const nextCursorForMilestone = (task, fallback)=>{
@@ -906,8 +928,15 @@
   };
 
   const relationInfo = (task)=>{
-    if(task.structureRelation==="post" && task.limitLateMin!=null) return `≤ ${toHHMM(task.limitLateMin)}`;
-    if((task.structureRelation==="pre" || task.structureRelation==="parallel") && task.limitEarlyMin!=null) return `≥ ${toHHMM(task.limitEarlyMin)}`;
+    if(task.structureRelation==="post" && Number.isFinite(task.limitLateMin)) return `≤ ${toHHMM(task.limitLateMin)}`;
+    if(task.structureRelation==="pre"){
+      const hasLower = Number.isFinite(task.limitEarlyMin);
+      const hasUpper = Number.isFinite(task.limitLateMin);
+      if(hasLower && hasUpper) return `${toHHMM(task.limitEarlyMin)} – ${toHHMM(task.limitLateMin)}`;
+      if(hasLower) return `≥ ${toHHMM(task.limitEarlyMin)}`;
+      if(hasUpper) return `≤ ${toHHMM(task.limitLateMin)}`;
+    }
+    if(task.structureRelation==="parallel" && Number.isFinite(task.limitEarlyMin)) return `≥ ${toHHMM(task.limitEarlyMin)}`;
     if(task.startMin!=null) return toHHMM(task.startMin);
     if(task.durationMin!=null) return `${task.durationMin} min`;
     return "Sin datos";
@@ -1005,15 +1034,18 @@
 
     const lower=Number.isFinite(task.limitEarlyMin) ? roundToFive(clampToDay(task.limitEarlyMin)) : defaultPretaskLower();
     const duration=Math.max(5, roundToFive(Number(task.durationMin)||PRETASK_DEFAULT_DURATION));
+    const latestCap=Number.isFinite(rootTask?.startMin)
+      ? Math.max(lower, roundToFive(clampToDay(rootTask.startMin - duration)))
+      : Math.max(lower, DAY_MAX_MIN);
     const upperDefault=defaultPretaskUpper(rootTask, lower, duration);
     const upper=Number.isFinite(task.limitLateMin) ? roundToFive(clampToDay(task.limitLateMin)) : upperDefault;
 
     const timeField=el("div","pretask-field");
-    timeField.appendChild(el("span","pretask-field-label","Límites horarios"));
+    timeField.appendChild(el("span","pretask-field-label","Franja horaria"));
     const timeGrid=el("div","pretask-time-grid");
 
     const lowerWrap=el("label","pretask-time");
-    lowerWrap.appendChild(el("span","pretask-time-label","Inferior"));
+    lowerWrap.appendChild(el("span","pretask-time-label","Franja horaria mínima"));
     const lowerInput=el("input","input pretask-time-input");
     lowerInput.type="time";
     lowerInput.step="300";
@@ -1033,13 +1065,13 @@
     timeGrid.appendChild(lowerWrap);
 
     const upperWrap=el("label","pretask-time");
-    upperWrap.appendChild(el("span","pretask-time-label","Superior"));
+    upperWrap.appendChild(el("span","pretask-time-label","Franja horaria máxima"));
     const upperInput=el("input","input pretask-time-input");
     upperInput.type="time";
     upperInput.step="300";
     upperInput.min=formatTimeForInput(lower);
-    upperInput.max=formatTimeForInput(lower + duration);
-    upperInput.value=formatTimeForInput(Math.max(lower, Math.min(upper, lower + duration)));
+    upperInput.max=formatTimeForInput(latestCap);
+    upperInput.value=formatTimeForInput(Math.max(lower, Math.min(upper, latestCap)));
     upperInput.onchange=()=>{
       const parsed=parseTimeFromInput(upperInput.value);
       if(parsed==null) return;
@@ -1254,10 +1286,13 @@
     const duration=task.durationMin!=null ? `${task.durationMin} min` : "Sin duración";
     addDetail("Duración", duration);
 
-    if(task.structureRelation==="pre" || task.structureRelation==="parallel"){
-      addDetail("Límite temprano", task.limitEarlyMin!=null ? toHHMM(task.limitEarlyMin) : "Sin definir");
+    if(task.structureRelation==="pre"){
+      addDetail("Franja horaria mínima", Number.isFinite(task.limitEarlyMin) ? toHHMM(task.limitEarlyMin) : "Sin definir");
+      addDetail("Franja horaria máxima", Number.isFinite(task.limitLateMin) ? toHHMM(task.limitLateMin) : "Sin definir");
+    }else if(task.structureRelation==="parallel"){
+      addDetail("Franja horaria mínima", Number.isFinite(task.limitEarlyMin) ? toHHMM(task.limitEarlyMin) : "Sin definir");
     }else if(task.structureRelation==="post"){
-      addDetail("Límite tarde", task.limitLateMin!=null ? toHHMM(task.limitLateMin) : "Sin definir");
+      addDetail("Límite tarde", Number.isFinite(task.limitLateMin) ? toHHMM(task.limitLateMin) : "Sin definir");
     }
 
     if(task.actionType===ACTION_TYPE_TRANSPORT){
