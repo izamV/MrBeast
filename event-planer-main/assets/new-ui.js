@@ -34,6 +34,7 @@
     if(typeof state.project.view.selectedTaskId === "undefined") state.project.view.selectedTaskId = null;
     if(typeof state.project.view.timelineEditorId === "undefined") state.project.view.timelineEditorId = null;
     if(typeof state.project.view.pretaskEditorId === "undefined") state.project.view.pretaskEditorId = null;
+    if(typeof state.project.view.paralleltaskEditorId === "undefined") state.project.view.paralleltaskEditorId = null;
     if(typeof state.project.view.posttaskEditorId === "undefined") state.project.view.posttaskEditorId = null;
     state.horaInicial = state.horaInicial || {};
     state.localizacionInicial = state.localizacionInicial || {};
@@ -160,12 +161,15 @@
       const hasLateLimit = !task.limitLateMinEnabled || Number.isFinite(task.limitLateMin);
       return hasName && hasDuration && hasLateLimit && hasLocation;
     }
-    if(task.structureRelation === "pre" || task.structureRelation === "parallel"){
+    if(task.structureRelation === "pre"){
       const hasLowerLimit = !task.limitEarlyMinEnabled || Number.isFinite(task.limitEarlyMin);
-      const hasUpperLimit = task.structureRelation === "pre"
-        ? (!task.limitLateMinEnabled || Number.isFinite(task.limitLateMin))
-        : true;
+      const hasUpperLimit = !task.limitLateMinEnabled || Number.isFinite(task.limitLateMin);
       return hasName && hasDuration && hasLowerLimit && hasUpperLimit && hasLocation;
+    }
+    if(task.structureRelation === "parallel"){
+      const hasStart = !task.limitEarlyMinEnabled || Number.isFinite(task.limitEarlyMin);
+      const hasEnd = !task.limitLateMinEnabled || Number.isFinite(task.limitLateMin);
+      return hasName && hasDuration && hasStart && hasEnd && hasLocation;
     }
     return hasName;
   };
@@ -202,13 +206,18 @@
     ensureSequentialMilestonesFrom(task, list);
     if(task?.structureRelation === "milestone"){
       refreshPretaskTreeBounds(task);
+      refreshParallelBounds(task);
       refreshPosttaskTreeBounds(task);
     }else if(task?.structureRelation === "pre"){
       const root = (getBreadcrumb(task)[0]) || null;
       if(root){
         refreshPretaskTreeBounds(root);
+        refreshParallelBounds(root);
         refreshPosttaskTreeBounds(root);
       }
+    }else if(task?.structureRelation === "parallel"){
+      const root = (getBreadcrumb(task)[0]) || null;
+      ensureParallelBounds(task, root);
     }else if(task?.structureRelation === "post"){
       const root = (getBreadcrumb(task)[0]) || null;
       if(root) refreshPosttaskTreeBounds(root);
@@ -308,6 +317,70 @@
       });
     };
     visit(rootTask);
+  };
+
+  const defaultParallelLower = (rootTask)=>{
+    if(Number.isFinite(rootTask?.startMin)){
+      return roundToFive(clampToDay(rootTask.startMin));
+    }
+    return roundToFive(clampToDay(defaultTimelineStart()));
+  };
+
+  const defaultParallelUpper = (rootTask, lower, duration)=>{
+    const fallback = lower + duration;
+    let candidate = fallback;
+    if(Number.isFinite(rootTask?.endMin)){
+      candidate = Math.max(candidate, roundToFive(clampToDay(rootTask.endMin)));
+    }else if(Number.isFinite(rootTask?.startMin) && Number.isFinite(rootTask?.durationMin)){
+      const rootEnd = rootTask.startMin + Math.max(5, Number(rootTask.durationMin)||PRETASK_DEFAULT_DURATION);
+      candidate = Math.max(candidate, roundToFive(clampToDay(rootEnd)));
+    }
+    return roundToFive(clampToDay(Math.max(lower, candidate)));
+  };
+
+  const ensureParallelBounds = (task, rootTask)=>{
+    if(!task || task.structureRelation !== "parallel") return;
+    const duration = Math.max(5, roundToFive(Number(task.durationMin)||PRETASK_DEFAULT_DURATION));
+    const minLower = 0;
+    const maxLower = Math.max(0, DAY_MAX_MIN - duration);
+    const baseLower = defaultParallelLower(rootTask);
+    let baseUpper = defaultParallelUpper(rootTask, baseLower, duration);
+    if(baseUpper < baseLower + duration) baseUpper = Math.min(DAY_MAX_MIN, baseLower + duration);
+    const rangeRequested = !!task.limitEarlyMinEnabled || !!task.limitLateMinEnabled;
+    let lower = rangeRequested && Number.isFinite(task.limitEarlyMin)
+      ? roundToFive(clampToDay(task.limitEarlyMin))
+      : baseLower;
+    let upper = rangeRequested && Number.isFinite(task.limitLateMin)
+      ? roundToFive(clampToDay(task.limitLateMin))
+      : baseUpper;
+    lower = Math.max(minLower, Math.min(maxLower, lower));
+    const minUpper = Math.min(DAY_MAX_MIN, lower + duration);
+    const maxUpper = DAY_MAX_MIN;
+    let rangeEnabled = rangeRequested;
+    if(rangeEnabled){
+      if(upper < minUpper) upper = minUpper;
+      if(upper > maxUpper) upper = maxUpper;
+    }else{
+      lower = baseLower;
+      upper = baseUpper;
+    }
+    upper = Math.max(lower, upper);
+    lower = roundToFive(clampToDay(lower));
+    upper = roundToFive(clampToDay(upper));
+    task.durationMin = duration;
+    task.limitEarlyMin = lower;
+    task.limitLateMin = upper;
+    task.limitEarlyMinEnabled = rangeEnabled;
+    task.limitLateMinEnabled = rangeEnabled;
+  };
+
+  const refreshParallelBounds = (rootTask)=>{
+    if(!rootTask) return;
+    getTaskChildren(rootTask.id).forEach(child=>{
+      if(child.structureRelation === "parallel"){
+        ensureParallelBounds(child, rootTask);
+      }
+    });
   };
 
   const defaultPosttaskLower = (rootTask)=>{
@@ -1095,7 +1168,17 @@
       if(hasLower) return `≥ ${toHHMM(task.limitEarlyMin)}`;
       if(hasUpper) return `≤ ${toHHMM(task.limitLateMin)}`;
     }
-    if(task.structureRelation==="parallel" && task.limitEarlyMinEnabled && Number.isFinite(task.limitEarlyMin)) return `≥ ${toHHMM(task.limitEarlyMin)}`;
+    if(task.structureRelation==="parallel"){
+      const hasLower = task.limitEarlyMinEnabled && Number.isFinite(task.limitEarlyMin);
+      const hasUpper = task.limitLateMinEnabled && Number.isFinite(task.limitLateMin);
+      if(hasLower && hasUpper){
+        const lower=toHHMM(task.limitEarlyMin);
+        const upper=toHHMM(task.limitLateMin);
+        return lower===upper ? lower : `${lower} – ${upper}`;
+      }
+      if(hasLower) return `Desde ${toHHMM(task.limitEarlyMin)}`;
+      if(hasUpper) return `Hasta ${toHHMM(task.limitLateMin)}`;
+    }
     if(task.startMin!=null) return toHHMM(task.startMin);
     if(task.durationMin!=null) return `${task.durationMin} min`;
     return "Sin datos";
@@ -1116,6 +1199,25 @@
   };
 
   const pretaskDurationLabel = (task)=>{
+    if(Number.isFinite(task.durationMin)) return `${task.durationMin} min`;
+    return "Sin duración";
+  };
+
+  const parallelRangeLabel = (task)=>{
+    const hasLower = task.limitEarlyMinEnabled && Number.isFinite(task.limitEarlyMin);
+    const hasUpper = task.limitLateMinEnabled && Number.isFinite(task.limitLateMin);
+    if(hasLower && hasUpper){
+      const lower=toHHMM(task.limitEarlyMin);
+      const upper=toHHMM(task.limitLateMin);
+      return lower===upper ? lower : `${lower} – ${upper}`;
+    }
+    if(hasLower) return `Desde ${toHHMM(task.limitEarlyMin)}`;
+    if(hasUpper) return `Hasta ${toHHMM(task.limitLateMin)}`;
+    if(task.limitEarlyMinEnabled || task.limitLateMinEnabled) return "Sin definir";
+    return "Por defecto";
+  };
+
+  const parallelDurationLabel = (task)=>{
     if(Number.isFinite(task.durationMin)) return `${task.durationMin} min`;
     return "Sin duración";
   };
@@ -2009,28 +2111,288 @@
     return area;
   };
 
-  const renderNexoArea = (task, relation, label, position)=>{
-    const area=el("div",`nexo-area nexo-${position}`);
-    area.dataset.relation=relation;
+  const createParallelTask = (rootTask)=>{
+    if(!rootTask) return;
+    const task=createTask({ parentId: rootTask.id, relation:"parallel" });
+    task.actionName = "";
+    task.durationMin = PRETASK_DEFAULT_DURATION;
+    const lower = defaultParallelLower(rootTask);
+    const upper = defaultParallelUpper(rootTask, lower, task.durationMin);
+    task.limitEarlyMinEnabled = true;
+    task.limitLateMinEnabled = true;
+    task.limitEarlyMin = lower;
+    task.limitLateMin = upper;
+    touchTask(task);
+    state.project.view.selectedTaskId = rootTask.id;
+    state.project.view.paralleltaskEditorId = task.id;
+    renderClient();
+  };
+
+  const renderParallelEditor = (rootTask, task)=>{
+    const editor=el("div","pretask-editor parallel-editor");
+
+    const nameField=el("div","pretask-field parallel-field");
+    nameField.appendChild(el("span","pretask-field-label parallel-field-label","Nombre de la tarea"));
+    const nameInput=el("input","input pretask-input");
+    nameInput.type="text";
+    nameInput.placeholder="Escribe un nombre";
+    nameInput.value=task.actionName||"";
+    nameInput.oninput=()=>{ task.actionName = nameInput.value; };
+    nameInput.onblur=()=>{ touchTask(task); state.project.view.paralleltaskEditorId = task.id; renderClient(); };
+    nameField.appendChild(nameInput);
+    editor.appendChild(nameField);
+
+    const durationField=el("div","pretask-field parallel-field");
+    durationField.appendChild(el("span","pretask-field-label parallel-field-label","Duración"));
+    const durationControls=el("div","pretask-duration");
+    const minus=el("button","pretask-step","−"); minus.type="button";
+    const plus=el("button","pretask-step","+"); plus.type="button";
+    const durationInput=el("input","input pretask-duration-input");
+    durationInput.type="number";
+    durationInput.step="5";
+    durationInput.min="5";
+    durationInput.inputMode="numeric";
+    durationInput.setAttribute("aria-label","Duración en minutos");
+    const currentDuration=()=> Math.max(5, roundToFive(Number(task.durationMin)||PRETASK_DEFAULT_DURATION));
+    const updateDurationButtons=()=>{
+      const current=currentDuration();
+      minus.disabled = current<=5;
+      durationInput.value = String(current);
+    };
+    const commitDuration=(value)=>{
+      const parsed=Math.max(5, roundToFive(Number(value)||currentDuration()));
+      if(parsed===currentDuration()){
+        updateDurationButtons();
+        return;
+      }
+      task.durationMin = parsed;
+      ensureParallelBounds(task, rootTask);
+      touchTask(task);
+      state.project.view.paralleltaskEditorId = task.id;
+      renderClient();
+    };
+    const adjustDuration=(delta)=>{
+      const next=currentDuration()+delta;
+      if(next<5) return;
+      commitDuration(next);
+    };
+    minus.onclick=()=>adjustDuration(-5);
+    plus.onclick=()=>adjustDuration(5);
+    durationInput.onchange=()=>commitDuration(durationInput.value);
+    durationInput.onblur=()=>commitDuration(durationInput.value);
+    durationControls.appendChild(minus);
+    durationControls.appendChild(durationInput);
+    durationControls.appendChild(plus);
+    durationField.appendChild(durationControls);
+    editor.appendChild(durationField);
+
+    updateDurationButtons();
+
+    const locationField=el("div","pretask-field parallel-field");
+    locationField.appendChild(el("span","pretask-field-label parallel-field-label","Localización"));
+    const locationSelect=el("select","input");
+    const emptyOption=el("option",null,"- seleccionar -"); emptyOption.value="";
+    locationSelect.appendChild(emptyOption);
+    (state.locations||[]).forEach(loc=>{
+      const opt=el("option",null,loc.nombre||"Localización");
+      opt.value=loc.id;
+      if(String(loc.id)===String(task.locationId)) opt.selected=true;
+      locationSelect.appendChild(opt);
+    });
+    locationSelect.onchange=()=>{
+      task.locationId = locationSelect.value || null;
+      touchTask(task);
+      state.project.view.paralleltaskEditorId = task.id;
+      renderClient();
+    };
+    locationField.appendChild(locationSelect);
+    editor.appendChild(locationField);
+
+    const defaultLower = defaultParallelLower(rootTask);
+    const duration=Math.max(5, roundToFive(Number(task.durationMin)||PRETASK_DEFAULT_DURATION));
+    const defaultUpper = defaultParallelUpper(rootTask, defaultLower, duration);
+    const rangeEnabled=!!task.limitEarlyMinEnabled || !!task.limitLateMinEnabled;
+    const storedLower=Number.isFinite(task.limitEarlyMin) ? roundToFive(clampToDay(task.limitEarlyMin)) : defaultLower;
+    const storedUpper=Number.isFinite(task.limitLateMin) ? roundToFive(clampToDay(task.limitLateMin)) : defaultUpper;
+    const effectiveLower=rangeEnabled ? storedLower : defaultLower;
+    const effectiveUpper=rangeEnabled ? storedUpper : defaultUpper;
+    const minLower=0;
+    const maxLower=Math.max(0, DAY_MAX_MIN - duration);
+    const minUpperForInput=Math.max(effectiveLower + duration, minLower + duration);
+
+    const timeField=el("div","pretask-field parallel-field");
+    timeField.appendChild(el("span","pretask-field-label parallel-field-label","Franja horaria"));
+    const timeGrid=el("div","pretask-time-grid parallel-time-grid");
+
+    const toggleWrap=el("div","pretask-time parallel-time");
+    const rangeToggleLabel=el("label","pretask-time-toggle parallel-time-toggle");
+    const rangeToggle=el("input","pretask-time-checkbox");
+    rangeToggle.type="checkbox";
+    rangeToggle.checked=rangeEnabled;
+    rangeToggle.onchange=()=>{
+      const enabled=rangeToggle.checked;
+      task.limitEarlyMinEnabled = enabled;
+      task.limitLateMinEnabled = enabled;
+      ensureParallelBounds(task, rootTask);
+      touchTask(task);
+      state.project.view.paralleltaskEditorId = task.id;
+      renderClient();
+    };
+    rangeToggleLabel.appendChild(rangeToggle);
+    rangeToggleLabel.appendChild(el("span","pretask-time-label parallel-time-label","Definir manualmente"));
+    toggleWrap.appendChild(rangeToggleLabel);
+    timeGrid.appendChild(toggleWrap);
+
+    const lowerWrap=el("div","pretask-time parallel-time");
+    lowerWrap.appendChild(el("span","pretask-time-label parallel-time-label","Inicio"));
+    const lowerInputWrap=el("div","pretask-time-input-wrap");
+    const lowerInput=el("input","input pretask-time-input");
+    lowerInput.type="time";
+    lowerInput.step="300";
+    lowerInput.min=formatTimeForInput(minLower);
+    lowerInput.max=formatTimeForInput(maxLower);
+    lowerInput.value=formatTimeForInput(Math.max(minLower, Math.min(effectiveLower, maxLower)));
+    lowerInput.disabled=!rangeEnabled;
+    lowerInput.onchange=()=>{
+      const parsed=parseTimeFromInput(lowerInput.value);
+      if(parsed==null) return;
+      task.limitEarlyMin = parsed;
+      ensureParallelBounds(task, rootTask);
+      touchTask(task);
+      state.project.view.paralleltaskEditorId = task.id;
+      renderClient();
+    };
+    lowerInput.onblur=()=>{
+      const parsed=parseTimeFromInput(lowerInput.value);
+      if(parsed==null) return;
+      task.limitEarlyMin = parsed;
+      ensureParallelBounds(task, rootTask);
+      touchTask(task);
+      state.project.view.paralleltaskEditorId = task.id;
+      renderClient();
+    };
+    lowerInputWrap.hidden=!rangeEnabled;
+    lowerInputWrap.appendChild(lowerInput);
+    lowerWrap.appendChild(lowerInputWrap);
+    timeGrid.appendChild(lowerWrap);
+
+    const upperWrap=el("div","pretask-time parallel-time");
+    upperWrap.appendChild(el("span","pretask-time-label parallel-time-label","Fin"));
+    const upperInputWrap=el("div","pretask-time-input-wrap");
+    const upperInput=el("input","input pretask-time-input");
+    upperInput.type="time";
+    upperInput.step="300";
+    upperInput.min=formatTimeForInput(rangeEnabled ? minUpperForInput : Math.max(defaultLower + duration, minLower + duration));
+    upperInput.max=formatTimeForInput(DAY_MAX_MIN);
+    upperInput.value=formatTimeForInput(Math.max(minUpperForInput, Math.min(effectiveUpper, DAY_MAX_MIN)));
+    upperInput.disabled=!rangeEnabled;
+    upperInput.onchange=()=>{
+      const parsed=parseTimeFromInput(upperInput.value);
+      if(parsed==null) return;
+      task.limitLateMin = parsed;
+      ensureParallelBounds(task, rootTask);
+      touchTask(task);
+      state.project.view.paralleltaskEditorId = task.id;
+      renderClient();
+    };
+    upperInput.onblur=()=>{
+      const parsed=parseTimeFromInput(upperInput.value);
+      if(parsed==null) return;
+      task.limitLateMin = parsed;
+      ensureParallelBounds(task, rootTask);
+      touchTask(task);
+      state.project.view.paralleltaskEditorId = task.id;
+      renderClient();
+    };
+    upperInputWrap.hidden=!rangeEnabled;
+    upperInputWrap.appendChild(upperInput);
+    upperWrap.appendChild(upperInputWrap);
+    timeGrid.appendChild(upperWrap);
+
+    if(!rangeEnabled){
+      const note=el("div","pretask-time-note parallel-time-note","Usa la franja de la tarea principal");
+      timeGrid.appendChild(note);
+    }
+
+    timeField.appendChild(timeGrid);
+    editor.appendChild(timeField);
+
+    return editor;
+  };
+
+  const renderParallelCard = (rootTask, task)=>{
+    const card=el("div","pretask-card parallel-card");
+    card.dataset.taskId = task.id;
+    const isOpen = state.project.view.paralleltaskEditorId === task.id;
+    if(isOpen) card.classList.add("open");
+
+    const item=el("button","nexo-item","");
+    if(!isTaskComplete(task)) item.classList.add("pending");
+    if(isOpen) item.classList.add("active");
+    item.onclick=()=>{
+      state.project.view.paralleltaskEditorId = isOpen ? null : task.id;
+      renderClient();
+    };
+    item.appendChild(el("div","nexo-name",labelForTask(task)));
+    const rangeLabel=parallelRangeLabel(task);
+    if(rangeLabel){
+      item.appendChild(el("div","nexo-range",rangeLabel));
+    }
+    item.appendChild(el("div","mini",parallelDurationLabel(task)));
+
+    let locationLabel="";
+    if(task.actionType===ACTION_TYPE_TRANSPORT){
+      const flow=transportFlowForTask(task);
+      const originName=locationNameById(flow.origin) || "Sin origen";
+      const destName=locationNameById(flow.destination) || "Sin destino";
+      locationLabel=`${originName} → ${destName}`;
+    }else if(task.locationApplies===false){
+      locationLabel="No aplica";
+    }else{
+      locationLabel=locationNameById(task.locationId) || "Sin localización";
+    }
+    item.appendChild(el("div","mini",locationLabel));
+    card.appendChild(item);
+
+    if(isOpen){
+      card.appendChild(renderParallelEditor(rootTask, task));
+    }
+
+    return card;
+  };
+
+  const renderParallelArea = (task)=>{
+    const area=el("div","nexo-area nexo-left");
+    area.dataset.relation="parallel";
+    area.dataset.taskId = task.id;
     const head=el("div","nexo-head");
-    head.appendChild(el("h4",null,label));
+    head.appendChild(el("h4",null,"Concurrencia"));
+    const controls=el("div","pretask-controls parallel-controls");
+    const createBtn=el("button","btn small","Crear");
+    createBtn.onclick=()=> createParallelTask(task);
+    controls.appendChild(createBtn);
+    head.appendChild(controls);
     area.appendChild(head);
-    const children=getTaskChildren(task.id).filter(ch=>ch.structureRelation===relation);
+    const children=getTaskChildren(task.id).filter(ch=>ch.structureRelation==="parallel");
+    const editingId = state.project.view.paralleltaskEditorId;
+    if(editingId && !children.some(ch=>ch.id===editingId)){
+      state.project.view.paralleltaskEditorId = null;
+    }
     if(!children.length){
       area.appendChild(el("div","nexo-empty","Sin tareas"));
-    }else{
-      const list=el("div","nexo-list");
-      children.forEach(ch=>{
-        const item=el("button","nexo-item","");
-        if(!isTaskComplete(ch)) item.classList.add("pending");
-        if(state.project.view.selectedTaskId===ch.id) item.classList.add("active");
-        item.onclick=()=>{ selectTask(ch.id); renderClient(); };
-        item.appendChild(el("div","nexo-name",labelForTask(ch)));
-        item.appendChild(el("div","mini",relationInfo(ch)));
-        list.appendChild(item);
-      });
-      area.appendChild(list);
+      return area;
     }
+    const list=el("div","parallel-list");
+    const sorted=children.slice().sort((a,b)=>{
+      const la=Number.isFinite(a.limitEarlyMin) ? a.limitEarlyMin : defaultParallelLower(task);
+      const lb=Number.isFinite(b.limitEarlyMin) ? b.limitEarlyMin : defaultParallelLower(task);
+      if(la!==lb) return la-lb;
+      return labelForTask(a).localeCompare(labelForTask(b));
+    });
+    sorted.forEach(par=>{
+      list.appendChild(renderParallelCard(task, par));
+    });
+    area.appendChild(list);
     return area;
   };
 
@@ -2106,7 +2468,11 @@
       const lowerText = task.limitEarlyMinEnabled && Number.isFinite(task.limitEarlyMin)
         ? toHHMM(task.limitEarlyMin)
         : "Sin restricción";
-      addDetail("Franja horaria mínima", lowerText);
+      const upperText = task.limitLateMinEnabled && Number.isFinite(task.limitLateMin)
+        ? toHHMM(task.limitLateMin)
+        : "Sin restricción";
+      addDetail("Inicio", lowerText);
+      addDetail("Fin", upperText);
     }else if(task.structureRelation==="post"){
       const lateText = task.limitLateMinEnabled && Number.isFinite(task.limitLateMin)
         ? toHHMM(task.limitLateMin)
@@ -2141,7 +2507,7 @@
     center.appendChild(renderStaffPicker(task));
 
     grid.appendChild(renderPretaskArea(task));
-    grid.appendChild(renderNexoArea(task,"parallel","Concurrencia","left"));
+    grid.appendChild(renderParallelArea(task));
     grid.appendChild(center);
     grid.appendChild(renderMaterialArea(task));
     grid.appendChild(renderPosttaskArea(task));

@@ -198,24 +198,39 @@ table.matlist td.act{width:120px}
 .pretask-card{display:flex;flex-direction:column;gap:.4rem;min-width:180px;max-width:100%}
 .pretask-card .nexo-item{width:100%;border-color:#f97316;color:#fdba74}
 .pretask-card.open .nexo-item{border-color:#2563eb}
+.parallel-list{display:flex;flex-direction:column;gap:.45rem}
+.parallel-card{display:flex;flex-direction:column;gap:.4rem;min-width:180px;max-width:100%}
+.parallel-card .nexo-item{width:100%;border-color:#0d9488;color:#5eead4}
+.parallel-card .nexo-item.pending{border-color:#0d9488;color:#99f6e4}
+.parallel-card.open .nexo-item{border-color:#2563eb}
 .pretask-editor{display:none;flex-direction:column;gap:.55rem;padding:.6rem;border:1px solid #1f2937;border-radius:.6rem;background:#0f172a}
 .pretask-card.open .pretask-editor,.posttask-card.open .pretask-editor{display:flex}
+.parallel-editor{display:none;flex-direction:column;gap:.55rem;padding:.6rem;border:1px solid #1f2937;border-radius:.6rem;background:#0f172a}
+.parallel-card.open .parallel-editor{display:flex}
 .pretask-field{display:flex;flex-direction:column;gap:.3rem}
+.parallel-field{display:flex;flex-direction:column;gap:.3rem}
 .pretask-field-label{font-size:.7rem;letter-spacing:.08em;text-transform:uppercase;color:#c4b5fd}
+.parallel-field-label{font-size:.7rem;letter-spacing:.08em;text-transform:uppercase;color:#5eead4}
 .pretask-input{width:100%}
 .pretask-duration{display:flex;align-items:center;gap:.5rem}
+.parallel-controls{display:flex;gap:.4rem}
 .pretask-duration-input{width:72px;text-align:center;border-radius:.45rem;border:1px solid #1f2937;background:#111827;color:#e5e7eb;padding:.25rem .35rem;font-variant-numeric:tabular-nums}
 .pretask-duration-value{font-variant-numeric:tabular-nums;font-size:1rem}
 .pretask-step{width:32px;height:32px;border-radius:999px;border:1px solid #1f2937;background:#111827;color:#e5e7eb;display:flex;align-items:center;justify-content:center;font-size:1.1rem;cursor:pointer}
 .pretask-step:disabled{opacity:.35;cursor:not-allowed}
 .pretask-time-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.45rem}
+.parallel-time-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.45rem}
 .pretask-time{display:flex;flex-direction:column;gap:.25rem}
+.parallel-time{display:flex;flex-direction:column;gap:.25rem}
 .pretask-time-label{font-size:.7rem;color:#94a3b8}
+.parallel-time-label{font-size:.7rem;color:#5eead4}
 .pretask-time-input{width:100%}
 .pretask-time-toggle{display:flex;align-items:center;gap:.35rem;color:#cbd5f5;font-size:.7rem;letter-spacing:.05em;text-transform:uppercase;cursor:pointer}
+.parallel-time-toggle{display:flex;align-items:center;gap:.35rem;color:#5eead4;font-size:.7rem;letter-spacing:.05em;text-transform:uppercase;cursor:pointer}
 .pretask-time-checkbox{width:16px;height:16px;accent-color:#60a5fa}
 .pretask-time-input-wrap[hidden]{display:none}
 .pretask-time-note{grid-column:1/-1;font-size:.7rem;color:#64748b;padding:.1rem 0}
+.parallel-time-note{grid-column:1/-1;font-size:.7rem;color:#64748b;padding:.1rem 0}
 .pretask-arrow{display:flex;align-items:center;gap:.35rem;font-size:.75rem;color:#94a3b8;padding:0 .1rem}
 .pretask-arrow-icon{font-size:.85rem;color:#cbd5f5}
 .posttask-grid{display:flex;flex-direction:column;gap:.75rem}
