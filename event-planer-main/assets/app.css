@@ -274,7 +274,20 @@ table.matlist td.act{width:120px}
 .field-row label{font-weight:600;font-size:.85rem;color:#cbd5f5}
 .field-row .input, .field-row select, .field-row textarea{width:100%}
 .materials-list{display:flex;flex-direction:column;gap:.45rem}
-.material-row{display:flex;gap:.45rem;align-items:center}
+.materials-area{gap:1rem}
+.materials-editor{display:flex;flex-direction:column;gap:.75rem}
+.material-rows{display:flex;flex-direction:column;gap:.5rem}
+.material-row{display:grid;grid-template-columns:1fr 120px auto;gap:.5rem;align-items:center;background:#0b1220;border:1px solid #1f2937;border-radius:.6rem;padding:.6rem}
+.material-field{display:flex;flex-direction:column;gap:.25rem;font-size:.85rem;color:#94a3b8}
+.material-field-label{font-size:.75rem;letter-spacing:.08em;text-transform:uppercase}
+.material-field.qty input{font-variant-numeric:tabular-nums}
+.material-actions{display:flex;align-items:center;justify-content:flex-end}
+.material-actions .btn{white-space:nowrap}
+.materials-catalog{display:flex;flex-direction:column;gap:.75rem;padding-top:.5rem;border-top:1px solid rgba(148,163,184,.2)}
+.material-create-row{display:flex;gap:.5rem;flex-wrap:wrap}
+.material-create-row .input{flex:1 1 180px}
+.material-type-list{display:flex;flex-wrap:wrap;gap:.4rem}
+.material-type-chip{display:inline-flex;align-items:center;background:#0b1220;border:1px solid #1f2937;color:#e5e7eb;border-radius:.6rem;padding:.25rem .5rem;font-size:.8rem}
 .staff-picker{display:flex;flex-wrap:wrap;gap:.45rem}
 .staff-toggle{background:#111827;border:1px solid #1f2937;color:#e5e7eb;border-radius:.6rem;padding:.35rem .65rem;cursor:pointer}
 .staff-toggle.active{background:#047857;border-color:#059669;color:#fff}

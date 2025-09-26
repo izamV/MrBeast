@@ -20,6 +20,8 @@
 
   let seq = 0;
   const nextId = ()=>`T_${Date.now().toString(36)}${(++seq).toString(36)}`;
+  let materialSeq = 0;
+  const nextMaterialTypeId = ()=>`MT_${Date.now().toString(36)}${(++materialSeq).toString(36)}`;
 
   const originalEnsureDefaults = window.ensureDefaults || (()=>{});
   const originalEnsureLinkFields = window.ensureLinkFields || (()=>{});
@@ -1115,24 +1117,141 @@
     container.appendChild(grid);
   };
 
-  const renderMaterials = (task)=>{
-    const wrap=el("div","materials-section");
-    wrap.appendChild(el("h4",null,"Materiales"));
-    const table=el("div","materials-list");
+  const ensureMaterialTypes = ()=>{
+    if(!Array.isArray(state.materialTypes)) state.materialTypes = [];
+    return state.materialTypes;
+  };
+
+  const normalizeQuantity = (value)=>{
+    const num = Number(value);
+    if(!Number.isFinite(num)) return 0;
+    return Math.max(0, Math.round(num));
+  };
+
+  const renderMaterialAssignment = (task)=>{
+    const wrap=el("div","materials-editor");
+    const head=el("div","nexo-head");
+    head.appendChild(el("h4",null,"Materiales de la tarea"));
+    wrap.appendChild(head);
+
+    const rows=el("div","material-rows");
+    const types=ensureMaterialTypes();
+    task.materiales = Array.isArray(task.materiales) ? task.materiales.map(ensureMaterial) : [];
+
     if(!task.materiales.length){
-      table.appendChild(el("div","mini muted","Sin materiales"));
+      const empty=el("div","mini muted","Sin materiales asignados.");
+      rows.appendChild(empty);
     }else{
-      task.materiales.forEach(mat=>{
+      task.materiales.forEach((mat,idx)=>{
         const row=el("div","material-row");
-        const id=mat.materialTypeId;
-        const name=(state.materialTypes||[]).find(mt=>mt.id===id)?.nombre || "Material";
-        row.appendChild(el("span","material-name",name));
-        const qty=Math.max(0, Math.round(Number(mat.cantidad)||0));
-        row.appendChild(el("span","material-qty",`${qty}`));
-        table.appendChild(row);
+
+        const selectWrap=el("label","material-field");
+        selectWrap.appendChild(el("span","material-field-label","Material"));
+        const select=el("select","input");
+        const optEmpty=el("option",null,"- seleccionar -");
+        optEmpty.value="";
+        select.appendChild(optEmpty);
+        types.forEach(type=>{
+          const opt=el("option",null,type.nombre||"Material");
+          opt.value=type.id;
+          if(type.id===mat.materialTypeId) opt.selected=true;
+          select.appendChild(opt);
+        });
+        select.onchange=()=>{
+          mat.materialTypeId = select.value || null;
+          touchTask(task);
+          renderClient();
+        };
+        selectWrap.appendChild(select);
+        row.appendChild(selectWrap);
+
+        const qtyWrap=el("label","material-field qty");
+        qtyWrap.appendChild(el("span","material-field-label","Cantidad"));
+        const qtyInput=el("input","input");
+        qtyInput.type="number";
+        qtyInput.min="0";
+        qtyInput.step="1";
+        qtyInput.value = String(normalizeQuantity(mat.cantidad));
+        const commitQty=()=>{
+          const val=normalizeQuantity(qtyInput.value);
+          mat.cantidad = val;
+          qtyInput.value = String(val);
+          touchTask(task);
+        };
+        qtyInput.onchange=()=>{ commitQty(); renderClient(); };
+        qtyInput.onblur=()=>{ qtyInput.value = String(normalizeQuantity(qtyInput.value)); };
+        qtyWrap.appendChild(qtyInput);
+        row.appendChild(qtyWrap);
+
+        const actions=el("div","material-actions");
+        const removeBtn=el("button","btn danger small","Quitar");
+        removeBtn.onclick=()=>{
+          task.materiales.splice(idx,1);
+          touchTask(task);
+          renderClient();
+        };
+        actions.appendChild(removeBtn);
+        row.appendChild(actions);
+
+        rows.appendChild(row);
       });
     }
-    wrap.appendChild(table);
+
+    wrap.appendChild(rows);
+
+    const addBtn=el("button","btn small full","Añadir material");
+    addBtn.disabled = !types.length;
+    addBtn.onclick=()=>{
+      const defaultTypeId = (types[0]||{}).id || null;
+      const newEntry = ensureMaterial({ materialTypeId: defaultTypeId, cantidad: 1 });
+      task.materiales.push(newEntry);
+      touchTask(task);
+      renderClient();
+    };
+    wrap.appendChild(addBtn);
+
+    if(!types.length){
+      wrap.appendChild(el("div","mini muted","Crea materiales en el catálogo para poder asignarlos."));
+    }
+
+    return wrap;
+  };
+
+  const renderMaterialCatalog = ()=>{
+    const wrap=el("div","materials-catalog");
+    const head=el("div","nexo-head");
+    head.appendChild(el("h4",null,"Catálogo de materiales"));
+    wrap.appendChild(head);
+
+    const createRow=el("div","material-create-row");
+    const nameInput=el("input","input");
+    nameInput.placeholder="Nombre del material";
+    const createBtn=el("button","btn small","Crear material");
+    createBtn.onclick=()=>{
+      const name=(nameInput.value||"").trim();
+      if(!name) return;
+      const types=ensureMaterialTypes();
+      types.push({ id: nextMaterialTypeId(), nombre: name });
+      nameInput.value="";
+      touch();
+      renderClient();
+    };
+    createRow.appendChild(nameInput);
+    createRow.appendChild(createBtn);
+    wrap.appendChild(createRow);
+
+    const typeList=el("div","material-type-list");
+    const types=ensureMaterialTypes();
+    if(!types.length){
+      typeList.appendChild(el("div","mini muted","Sin materiales en el catálogo."));
+    }else{
+      types.forEach(type=>{
+        const chip=el("span","material-type-chip", type.nombre || "Material");
+        typeList.appendChild(chip);
+      });
+    }
+    wrap.appendChild(typeList);
+
     return wrap;
   };
 
@@ -2397,10 +2516,10 @@
   };
 
   const renderMaterialArea = (task)=>{
-    const area=el("div","nexo-area nexo-right");
+    const area=el("div","nexo-area nexo-right materials-area");
     area.dataset.relation="materials";
-    const mat=renderMaterials(task);
-    area.appendChild(mat);
+    area.appendChild(renderMaterialAssignment(task));
+    area.appendChild(renderMaterialCatalog());
     return area;
   };
 
