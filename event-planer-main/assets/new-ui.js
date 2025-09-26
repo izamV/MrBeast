@@ -1217,6 +1217,7 @@
     }else{
       task.materiales.forEach((mat,idx)=>{
         const row=el("div","material-row");
+        const resolveEntry = ()=> task.materiales[idx] || mat;
 
         const selectWrap=el("label","material-field");
         selectWrap.appendChild(el("span","material-field-label","Material"));
@@ -1265,7 +1266,8 @@
         row.appendChild(qtyWrap);
 
         const syncQtyUI = ()=>{
-          const val = normalizeQuantity(mat.cantidad);
+          const source = resolveEntry();
+          const val = normalizeQuantity(source?.cantidad);
           qtyInput.value = String(val);
           decrementBtn.disabled = val <= 1;
         };
@@ -1274,9 +1276,13 @@
           if(typeof value === "string" && value.trim()===""){
             return;
           }
+          const entry = resolveEntry();
           const next = normalizeQuantity(value);
-          const prev = normalizeQuantity(mat.cantidad);
+          const prev = normalizeQuantity(entry?.cantidad);
           if(prev !== next){
+            if(entry){
+              entry.cantidad = next;
+            }
             mat.cantidad = next;
             touchTask(task);
           }
@@ -1291,7 +1297,8 @@
         qtyInput.onblur=()=>{ syncQtyUI(); };
 
         const adjustQty = (delta)=>{
-          const current = normalizeQuantity(mat.cantidad);
+          const entry = resolveEntry();
+          const current = normalizeQuantity(entry?.cantidad);
           commitQty(current + delta, true);
         };
         decrementBtn.onclick=()=>{ adjustQty(-1); };
