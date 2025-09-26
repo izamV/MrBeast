@@ -97,6 +97,8 @@
     task.limitLateMinEnabled = task.limitLateMinEnabled==null
       ? task.limitLateMin != null
       : !!task.limitLateMinEnabled;
+    if(typeof task.locked === "undefined") task.locked = false;
+    else task.locked = !!task.locked;
     if(task.actionType !== ACTION_TYPE_TRANSPORT){
       task.vehicleId = null;
     }else if(!task.vehicleId){
@@ -127,6 +129,18 @@
   const getTaskById = (id)=> getTaskList().find(t=>t.id===id) || null;
   const getTaskChildren = (id)=> getTaskList().filter(t=>t.structureParentId===id);
   const getRootTasks = ()=> getTaskList().filter(t=>!t.structureParentId);
+
+  const rootTaskFor = (task)=>{
+    if(!task) return null;
+    if(!task.structureParentId) return task;
+    const path=getBreadcrumb(task);
+    return path[0] || task;
+  };
+
+  const isTaskLocked = (task)=>{
+    const root=rootTaskFor(task);
+    return !!(root && root.locked);
+  };
 
   const getBreadcrumb = (task)=>{
     if(!task) return [];
@@ -1086,10 +1100,26 @@
     sortedRoots.forEach(task=>{
       const item=el("button","catalog-item","");
       if(task.id===selectedRootId) item.classList.add("active");
+      if(task.locked) item.classList.add("locked");
       item.onclick=()=>{ selectTask(task.id); renderClient(); };
 
+      const titleRow=el("div","catalog-title-row");
       const title=el("div","catalog-name",labelForTask(task));
-      item.appendChild(title);
+      titleRow.appendChild(title);
+      const lockBtn=el("button","catalog-lock", task.locked?"🔒":"🔓");
+      lockBtn.type="button";
+      lockBtn.title = task.locked ? "Desbloquear tarea" : "Bloquear tarea";
+      lockBtn.setAttribute("aria-label", task.locked?"Desbloquear tarea":"Bloquear tarea");
+      lockBtn.onclick=(ev)=>{
+        ev.preventDefault();
+        ev.stopPropagation();
+        task.locked = !task.locked;
+        touchTask(task);
+        renderClient();
+      };
+      if(task.locked) lockBtn.classList.add("is-locked");
+      titleRow.appendChild(lockBtn);
+      item.appendChild(titleRow);
       const relationLabel=RELATION_LABEL[task.structureRelation] || "Tarea";
       item.appendChild(el("span","relation-tag",relationLabel));
       const meta=el("div","catalog-meta");
@@ -1185,14 +1215,23 @@
     const types=ensureMaterialTypes();
     task.materiales = Array.isArray(task.materiales) ? task.materiales.map(ensureMaterial) : [];
 
-    const isEditing = state.project.view.materialsEditorId === task.id;
+    const locked=isTaskLocked(task);
+    if(locked && state.project.view.materialsEditorId === task.id){
+      state.project.view.materialsEditorId = null;
+    }
+    const isEditing = !locked && state.project.view.materialsEditorId === task.id;
     const controls=el("div","material-head-controls");
-    const toggleBtn=el("button","btn small", isEditing ? "Aceptar" : "Editar");
+    const toggleBtn=el("button","btn small", isEditing ? "Aceptar" : (locked?"Bloqueada":"Editar"));
     toggleBtn.type="button";
-    toggleBtn.onclick=()=>{
-      state.project.view.materialsEditorId = isEditing ? null : task.id;
-      renderClient();
-    };
+    if(locked){
+      toggleBtn.disabled = true;
+      toggleBtn.classList.add("locked");
+    }else{
+      toggleBtn.onclick=()=>{
+        state.project.view.materialsEditorId = isEditing ? null : task.id;
+        renderClient();
+      };
+    }
     controls.appendChild(toggleBtn);
     head.appendChild(controls);
     wrap.appendChild(head);
@@ -1201,6 +1240,9 @@
       wrap.appendChild(renderMaterialSummaryView(task, types));
       if(!types.length){
         wrap.appendChild(el("div","mini muted","Crea materiales en el catálogo para poder asignarlos."));
+      }
+      if(locked){
+        wrap.appendChild(el("div","mini muted","La tarea está bloqueada. Desbloquéala para editar los materiales."));
       }
       return wrap;
     }
@@ -1388,22 +1430,31 @@
     const wrap=el("div","staff-section");
     wrap.appendChild(el("h4",null,"Asignación a staff"));
     const list=el("div","staff-picker");
+    const locked=isTaskLocked(task);
     if(!(state.staff||[]).length){
       list.appendChild(el("div","mini muted","Añade miembros del staff desde la barra lateral."));
     }
     (state.staff||[]).forEach(st=>{
       const btn=el("button","staff-toggle",st.nombre||st.id);
       if((task.assignedStaffIds||[]).includes(st.id)) btn.classList.add("active");
-      btn.onclick=()=>{
-        const current=new Set(task.assignedStaffIds||[]);
-        if(current.has(st.id)) current.delete(st.id); else current.add(st.id);
-        task.assignedStaffIds=Array.from(current);
-        touchTask(task);
-        renderClient();
-      };
+      if(locked){
+        btn.disabled = true;
+        btn.classList.add("locked");
+      }else{
+        btn.onclick=()=>{
+          const current=new Set(task.assignedStaffIds||[]);
+          if(current.has(st.id)) current.delete(st.id); else current.add(st.id);
+          task.assignedStaffIds=Array.from(current);
+          touchTask(task);
+          renderClient();
+        };
+      }
       list.appendChild(btn);
     });
     wrap.appendChild(list);
+    if(locked){
+      wrap.appendChild(el("div","mini muted","La tarea está bloqueada. Desbloquéala para modificar la asignación."));
+    }
     return wrap;
   };
 
@@ -1889,16 +1940,26 @@
   const renderPretaskCard = (rootTask, level, task, parents)=>{
     const card=el("div","pretask-card");
     card.dataset.taskId = task.id;
-    const isOpen = state.project.view.pretaskEditorId === task.id;
+    const locked=isTaskLocked(rootTask);
+    let isOpen = state.project.view.pretaskEditorId === task.id && !locked;
+    if(locked && state.project.view.pretaskEditorId === task.id){
+      state.project.view.pretaskEditorId = null;
+      isOpen = false;
+    }
     if(isOpen) card.classList.add("open");
 
     const item=el("button","nexo-item","");
     if(!isTaskComplete(task)) item.classList.add("pending");
     if(isOpen) item.classList.add("active");
-    item.onclick=()=>{
-      state.project.view.pretaskEditorId = isOpen ? null : task.id;
-      renderClient();
-    };
+    if(locked){
+      item.disabled = true;
+      item.classList.add("locked");
+    }else{
+      item.onclick=()=>{
+        state.project.view.pretaskEditorId = isOpen ? null : task.id;
+        renderClient();
+      };
+    }
     item.appendChild(el("div","nexo-name",labelForTask(task)));
     const rangeLabel=pretaskRangeLabel(task);
     if(rangeLabel){
@@ -1954,7 +2015,12 @@
     head.appendChild(el("span","pretask-row-title",`Nivel ${level}`));
     const controls=el("div","pretask-controls");
     const createBtn=el("button","btn small","Crear");
-    createBtn.onclick=()=> createPretaskForLevel(rootTask, level, parents);
+    if(isTaskLocked(rootTask)){
+      createBtn.disabled = true;
+      createBtn.classList.add("locked");
+    }else{
+      createBtn.onclick=()=> createPretaskForLevel(rootTask, level, parents);
+    }
     if(level>1 && !(parents&&parents.length)) createBtn.disabled=true;
     controls.appendChild(createBtn);
     head.appendChild(controls);
@@ -1978,6 +2044,7 @@
     const area=el("div","nexo-area nexo-top");
     area.dataset.relation="pre";
     area.dataset.taskId = task.id;
+    if(isTaskLocked(task)) area.classList.add("locked");
     ensureTaskTreeResizeListener();
     const head=el("div","nexo-head");
     head.appendChild(el("h4",null,"Pretareas"));
@@ -2249,16 +2316,26 @@
   const renderPosttaskCard = (rootTask, level, task, parents)=>{
     const card=el("div","posttask-card");
     card.dataset.taskId = task.id;
-    const isOpen = state.project.view.posttaskEditorId === task.id;
+    const locked=isTaskLocked(rootTask);
+    let isOpen = state.project.view.posttaskEditorId === task.id && !locked;
+    if(locked && state.project.view.posttaskEditorId === task.id){
+      state.project.view.posttaskEditorId = null;
+      isOpen = false;
+    }
     if(isOpen) card.classList.add("open");
 
     const item=el("button","nexo-item","");
     if(!isTaskComplete(task)) item.classList.add("pending");
     if(isOpen) item.classList.add("active");
-    item.onclick=()=>{
-      state.project.view.posttaskEditorId = isOpen ? null : task.id;
-      renderClient();
-    };
+    if(locked){
+      item.disabled = true;
+      item.classList.add("locked");
+    }else{
+      item.onclick=()=>{
+        state.project.view.posttaskEditorId = isOpen ? null : task.id;
+        renderClient();
+      };
+    }
     item.appendChild(el("div","nexo-name",labelForTask(task)));
     const rangeLabel=pretaskRangeLabel(task);
     if(rangeLabel){
@@ -2314,7 +2391,12 @@
     head.appendChild(el("span","posttask-row-title",`Nivel ${level}`));
     const controls=el("div","pretask-controls");
     const createBtn=el("button","btn small","Crear");
-    createBtn.onclick=()=> createPosttaskForLevel(rootTask, level, parents);
+    if(isTaskLocked(rootTask)){
+      createBtn.disabled = true;
+      createBtn.classList.add("locked");
+    }else{
+      createBtn.onclick=()=> createPosttaskForLevel(rootTask, level, parents);
+    }
     if(level>1 && !(parents&&parents.length)) createBtn.disabled=true;
     controls.appendChild(createBtn);
     head.appendChild(controls);
@@ -2338,6 +2420,7 @@
     const area=el("div","nexo-area nexo-bottom");
     area.dataset.relation="post";
     area.dataset.taskId = task.id;
+    if(isTaskLocked(task)) area.classList.add("locked");
     ensureTaskTreeResizeListener();
     const head=el("div","nexo-head");
     head.appendChild(el("h4",null,"Posttareas"));
@@ -2571,16 +2654,26 @@
   const renderParallelCard = (rootTask, task)=>{
     const card=el("div","pretask-card parallel-card");
     card.dataset.taskId = task.id;
-    const isOpen = state.project.view.paralleltaskEditorId === task.id;
+    const locked=isTaskLocked(rootTask);
+    let isOpen = state.project.view.paralleltaskEditorId === task.id && !locked;
+    if(locked && state.project.view.paralleltaskEditorId === task.id){
+      state.project.view.paralleltaskEditorId = null;
+      isOpen = false;
+    }
     if(isOpen) card.classList.add("open");
 
     const item=el("button","nexo-item","");
     if(!isTaskComplete(task)) item.classList.add("pending");
     if(isOpen) item.classList.add("active");
-    item.onclick=()=>{
-      state.project.view.paralleltaskEditorId = isOpen ? null : task.id;
-      renderClient();
-    };
+    if(locked){
+      item.disabled = true;
+      item.classList.add("locked");
+    }else{
+      item.onclick=()=>{
+        state.project.view.paralleltaskEditorId = isOpen ? null : task.id;
+        renderClient();
+      };
+    }
     item.appendChild(el("div","nexo-name",labelForTask(task)));
     const rangeLabel=parallelRangeLabel(task);
     if(rangeLabel){
@@ -2613,11 +2706,17 @@
     const area=el("div","nexo-area nexo-left");
     area.dataset.relation="parallel";
     area.dataset.taskId = task.id;
+    if(isTaskLocked(task)) area.classList.add("locked");
     const head=el("div","nexo-head");
     head.appendChild(el("h4",null,"Concurrencia"));
     const controls=el("div","pretask-controls parallel-controls");
     const createBtn=el("button","btn small","Crear");
-    createBtn.onclick=()=> createParallelTask(task);
+    if(isTaskLocked(task)){
+      createBtn.disabled = true;
+      createBtn.classList.add("locked");
+    }else{
+      createBtn.onclick=()=> createParallelTask(task);
+    }
     controls.appendChild(createBtn);
     head.appendChild(controls);
     area.appendChild(head);
@@ -2647,6 +2746,7 @@
   const renderMaterialArea = (task)=>{
     const area=el("div","nexo-area nexo-right materials-area");
     area.dataset.relation="materials";
+    if(isTaskLocked(task)) area.classList.add("locked");
     area.appendChild(renderMaterialAssignment(task));
     area.appendChild(renderMaterialCatalog());
     return area;
@@ -2663,8 +2763,16 @@
       state.project.view.materialsEditorId = null;
     }
     applyTaskDefaults(task);
+    const locked=isTaskLocked(task);
+    if(locked){
+      state.project.view.materialsEditorId = null;
+      state.project.view.pretaskEditorId = null;
+      state.project.view.posttaskEditorId = null;
+      state.project.view.paralleltaskEditorId = null;
+    }
 
     const editor=el("div","task-editor");
+    if(locked) editor.classList.add("locked");
     const grid=el("div","nexo-grid");
 
     const center=el("div","nexo-area nexo-center");
@@ -2679,6 +2787,10 @@
     const statusChip=el("span","status-chip", isTaskComplete(task)?"Completa":"Falta info");
     statusChip.classList.add(isTaskComplete(task)?"ok":"warn");
     chips.appendChild(statusChip);
+    if(locked){
+      const lockChip=el("span","status-chip lock","Bloqueada");
+      chips.appendChild(lockChip);
+    }
     header.appendChild(chips);
     center.appendChild(header);
 
@@ -2692,6 +2804,10 @@
       if(idx<path.length-1) breadcrumb.appendChild(el("span","crumb-sep","›"));
     });
     center.appendChild(breadcrumb);
+
+    if(locked){
+      center.appendChild(el("div","lock-notice","Esta tarea está bloqueada. Desbloquéala desde el catálogo para editarla."));
+    }
 
     const details=el("div","detail-list");
     const addDetail=(label,value)=>{
