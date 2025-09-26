@@ -236,25 +236,57 @@
   const ensurePretaskBounds = (task, rootTask)=>{
     if(!task || task.structureRelation !== "pre") return;
     const duration = Math.max(5, roundToFive(Number(task.durationMin)||PRETASK_DEFAULT_DURATION));
-    const lowerEnabled = !!task.limitEarlyMinEnabled;
-    const storedLower = Number.isFinite(task.limitEarlyMin)
+    const rangeRequested = !!task.limitEarlyMinEnabled || !!task.limitLateMinEnabled;
+    const storedLowerRaw = Number.isFinite(task.limitEarlyMin)
       ? roundToFive(clampToDay(task.limitEarlyMin))
       : defaultPretaskLower();
-    const lower = lowerEnabled ? storedLower : defaultPretaskLower();
-    const defaultUpper = defaultPretaskUpper(rootTask, lower, duration);
-    const latestCap = Number.isFinite(rootTask?.startMin)
-      ? Math.max(lower, roundToFive(clampToDay(rootTask.startMin - duration)))
-      : Math.max(lower, DAY_MAX_MIN);
-    const upperEnabled = !!task.limitLateMinEnabled;
-    let storedUpper = Number.isFinite(task.limitLateMin)
+    const minLower = defaultPretaskLower();
+    const computeLatestCap = (baseLower)=> Number.isFinite(rootTask?.startMin)
+      ? Math.max(baseLower, roundToFive(clampToDay(rootTask.startMin - duration)))
+      : Math.max(baseLower, DAY_MAX_MIN);
+    const defaultUpperFor = (baseLower)=> defaultPretaskUpper(rootTask, baseLower, duration);
+
+    let lower = rangeRequested ? storedLowerRaw : minLower;
+    lower = roundToFive(clampToDay(lower));
+    let latestCap = computeLatestCap(lower);
+    let upper = Number.isFinite(task.limitLateMin)
       ? roundToFive(clampToDay(task.limitLateMin))
-      : defaultUpper;
-    if(!Number.isFinite(storedUpper)) storedUpper = defaultUpper;
-    if(storedUpper > latestCap) storedUpper = latestCap;
-    if(storedUpper < lower) storedUpper = lower;
+      : defaultUpperFor(lower);
+    if(!Number.isFinite(upper)) upper = defaultUpperFor(lower);
+
+    let rangeEnabled = rangeRequested;
+    if(rangeEnabled){
+      const maxLower = Math.max(minLower, latestCap - duration);
+      if(lower > maxLower) lower = maxLower;
+      if(lower < minLower) lower = minLower;
+      lower = roundToFive(clampToDay(lower));
+      latestCap = computeLatestCap(lower);
+      const minUpperAllowed = lower + duration;
+      const fallbackUpper = defaultUpperFor(lower);
+      const minUpper = Math.min(latestCap, lower + duration);
+      if(upper < minUpper) upper = Math.max(minUpperAllowed, fallbackUpper);
+      if(upper > latestCap) upper = latestCap;
+      if(upper < lower + duration){
+        // No hay espacio suficiente para respetar la duración dentro de la franja.
+        rangeEnabled = false;
+      }
+    }
+
+    if(!rangeEnabled){
+      lower = minLower;
+      latestCap = computeLatestCap(lower);
+      upper = defaultUpperFor(lower);
+    }
+
+    latestCap = computeLatestCap(lower);
+    if(upper > latestCap) upper = latestCap;
+    upper = roundToFive(clampToDay(Math.max(lower, upper)));
+
     task.durationMin = duration;
-    task.limitEarlyMin = storedLower;
-    task.limitLateMin = storedUpper;
+    task.limitEarlyMin = lower;
+    task.limitLateMin = upper;
+    task.limitEarlyMinEnabled = rangeEnabled;
+    task.limitLateMinEnabled = rangeEnabled;
   };
   const refreshPretaskTreeBounds = (rootTask)=>{
     if(!rootTask) return;
@@ -1080,43 +1112,50 @@
     updateDurationButtons();
 
     const duration=Math.max(5, roundToFive(Number(task.durationMin)||PRETASK_DEFAULT_DURATION));
-    const lowerEnabled=!!task.limitEarlyMinEnabled;
-    const upperEnabled=!!task.limitLateMinEnabled;
+    const rangeEnabled=!!task.limitEarlyMinEnabled || !!task.limitLateMinEnabled;
     const storedLower=Number.isFinite(task.limitEarlyMin) ? roundToFive(clampToDay(task.limitEarlyMin)) : defaultPretaskLower();
-    const effectiveLower=lowerEnabled ? storedLower : defaultPretaskLower();
+    const effectiveLower=rangeEnabled ? storedLower : defaultPretaskLower();
     const latestCap=Number.isFinite(rootTask?.startMin)
       ? Math.max(effectiveLower, roundToFive(clampToDay(rootTask.startMin - duration)))
       : Math.max(effectiveLower, DAY_MAX_MIN);
+    const latestLowerForDuration=Math.max(defaultPretaskLower(), latestCap - duration);
     const upperDefault=defaultPretaskUpper(rootTask, effectiveLower, duration);
     const storedUpper=Number.isFinite(task.limitLateMin) ? roundToFive(clampToDay(task.limitLateMin)) : upperDefault;
+    const minUpperForInput=Math.min(latestCap, effectiveLower + duration);
 
     const timeField=el("div","pretask-field");
     timeField.appendChild(el("span","pretask-field-label","Franja horaria"));
     const timeGrid=el("div","pretask-time-grid");
 
-    const lowerWrap=el("div","pretask-time");
-    const lowerToggleLabel=el("label","pretask-time-toggle");
-    const lowerToggle=el("input","pretask-time-checkbox");
-    lowerToggle.type="checkbox";
-    lowerToggle.checked=lowerEnabled;
-    lowerToggle.onchange=()=>{
-      task.limitEarlyMinEnabled = lowerToggle.checked;
+    const toggleWrap=el("div","pretask-time");
+    const rangeToggleLabel=el("label","pretask-time-toggle");
+    const rangeToggle=el("input","pretask-time-checkbox");
+    rangeToggle.type="checkbox";
+    rangeToggle.checked=rangeEnabled;
+    rangeToggle.onchange=()=>{
+      const enabled=rangeToggle.checked;
+      task.limitEarlyMinEnabled = enabled;
+      task.limitLateMinEnabled = enabled;
       ensurePretaskBounds(task, rootTask);
       touchTask(task);
       state.project.view.pretaskEditorId = task.id;
       renderClient();
     };
-    lowerToggleLabel.appendChild(lowerToggle);
-    lowerToggleLabel.appendChild(el("span","pretask-time-label","Franja horaria mínima"));
-    lowerWrap.appendChild(lowerToggleLabel);
+    rangeToggleLabel.appendChild(rangeToggle);
+    rangeToggleLabel.appendChild(el("span","pretask-time-label","Definir franja"));
+    toggleWrap.appendChild(rangeToggleLabel);
+    timeGrid.appendChild(toggleWrap);
+
+    const lowerWrap=el("div","pretask-time");
+    lowerWrap.appendChild(el("span","pretask-time-label","Franja horaria mínima"));
     const lowerInputWrap=el("div","pretask-time-input-wrap");
     const lowerInput=el("input","input pretask-time-input");
     lowerInput.type="time";
     lowerInput.step="300";
     lowerInput.min="00:00";
-    lowerInput.max="23:55";
+    lowerInput.max=formatTimeForInput(latestLowerForDuration);
     lowerInput.value=formatTimeForInput(storedLower);
-    lowerInput.disabled=!lowerEnabled;
+    lowerInput.disabled=!rangeEnabled;
     lowerInput.onchange=()=>{
       const parsed=parseTimeFromInput(lowerInput.value);
       if(parsed==null) return;
@@ -1135,34 +1174,21 @@
       state.project.view.pretaskEditorId = task.id;
       renderClient();
     };
-    lowerInputWrap.hidden=!lowerEnabled;
+    lowerInputWrap.hidden=!rangeEnabled;
     lowerInputWrap.appendChild(lowerInput);
     lowerWrap.appendChild(lowerInputWrap);
     timeGrid.appendChild(lowerWrap);
 
     const upperWrap=el("div","pretask-time");
-    const upperToggleLabel=el("label","pretask-time-toggle");
-    const upperToggle=el("input","pretask-time-checkbox");
-    upperToggle.type="checkbox";
-    upperToggle.checked=upperEnabled;
-    upperToggle.onchange=()=>{
-      task.limitLateMinEnabled = upperToggle.checked;
-      ensurePretaskBounds(task, rootTask);
-      touchTask(task);
-      state.project.view.pretaskEditorId = task.id;
-      renderClient();
-    };
-    upperToggleLabel.appendChild(upperToggle);
-    upperToggleLabel.appendChild(el("span","pretask-time-label","Franja horaria máxima"));
-    upperWrap.appendChild(upperToggleLabel);
+    upperWrap.appendChild(el("span","pretask-time-label","Franja horaria máxima"));
     const upperInputWrap=el("div","pretask-time-input-wrap");
     const upperInput=el("input","input pretask-time-input");
     upperInput.type="time";
     upperInput.step="300";
-    upperInput.min=formatTimeForInput(effectiveLower);
+    upperInput.min=formatTimeForInput(rangeEnabled ? minUpperForInput : effectiveLower);
     upperInput.max=formatTimeForInput(latestCap);
-    upperInput.value=formatTimeForInput(Math.max(effectiveLower, Math.min(storedUpper, latestCap)));
-    upperInput.disabled=!upperEnabled;
+    upperInput.value=formatTimeForInput(Math.max(rangeEnabled ? minUpperForInput : effectiveLower, Math.min(storedUpper, latestCap)));
+    upperInput.disabled=!rangeEnabled;
     upperInput.onchange=()=>{
       const parsed=parseTimeFromInput(upperInput.value);
       if(parsed==null) return;
@@ -1181,12 +1207,12 @@
       state.project.view.pretaskEditorId = task.id;
       renderClient();
     };
-    upperInputWrap.hidden=!upperEnabled;
+    upperInputWrap.hidden=!rangeEnabled;
     upperInputWrap.appendChild(upperInput);
     upperWrap.appendChild(upperInputWrap);
     timeGrid.appendChild(upperWrap);
 
-    if(!lowerEnabled && !upperEnabled){
+    if(!rangeEnabled){
       const note=el("div","pretask-time-note","Sin restricciones horarias definidas");
       timeGrid.appendChild(note);
     }
