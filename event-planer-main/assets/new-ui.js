@@ -1008,25 +1008,49 @@
     const durationControls=el("div","pretask-duration");
     const minus=el("button","pretask-step","−"); minus.type="button";
     const plus=el("button","pretask-step","+"); plus.type="button";
+    const durationInput=el("input","input pretask-duration-input");
+    durationInput.type="number";
+    durationInput.step="5";
+    durationInput.min="5";
+    durationInput.inputMode="numeric";
+    durationInput.setAttribute("aria-label","Duración en minutos");
+    const durationValue=el("span","pretask-duration-value","");
+    const currentDuration=()=> Math.max(5, roundToFive(Number(task.durationMin)||PRETASK_DEFAULT_DURATION));
     const updateDurationButtons=()=>{
-      const current=Math.max(5, Number(task.durationMin)||PRETASK_DEFAULT_DURATION);
+      const current=currentDuration();
       minus.disabled = current<=5;
+      durationInput.value = String(current);
       durationValue.textContent = `${current} min`;
     };
-    const adjustDuration=(delta)=>{
-      const current=Math.max(5, Number(task.durationMin)||PRETASK_DEFAULT_DURATION);
-      const next=Math.max(5, current+delta);
-      if(next===current) return;
-      task.durationMin = next;
+    const commitDuration=(value)=>{
+      const parsed=Math.max(5, roundToFive(Number(value)||currentDuration()));
+      if(parsed===currentDuration()){
+        updateDurationButtons();
+        return;
+      }
+      task.durationMin = parsed;
       ensurePretaskBounds(task, rootTask);
       touchTask(task);
       state.project.view.pretaskEditorId = task.id;
       renderClient();
     };
+    const adjustDuration=(delta)=>{
+      const next=currentDuration()+delta;
+      if(next<5) return;
+      commitDuration(next);
+    };
     minus.onclick=()=>adjustDuration(-5);
     plus.onclick=()=>adjustDuration(5);
-    const durationValue=el("span","pretask-duration-value","");
+    durationInput.onchange=()=>commitDuration(durationInput.value);
+    durationInput.onblur=()=>commitDuration(durationInput.value);
+    durationInput.oninput=()=>{
+      const preview=Math.max(5, roundToFive(Number(durationInput.value)||0));
+      if(Number.isFinite(preview)){
+        durationValue.textContent = `${preview} min`;
+      }
+    };
     durationControls.appendChild(minus);
+    durationControls.appendChild(durationInput);
     durationControls.appendChild(durationValue);
     durationControls.appendChild(plus);
     durationField.appendChild(durationControls);
