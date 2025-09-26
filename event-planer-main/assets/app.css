@@ -196,7 +196,7 @@ table.matlist td.act{width:120px}
 .pretask-row-body{display:flex;flex-wrap:wrap;gap:.45rem}
 .pretask-list{display:flex;flex-wrap:wrap;gap:.45rem;width:100%}
 .pretask-card{display:flex;flex-direction:column;gap:.4rem;min-width:180px;max-width:100%}
-.pretask-card .nexo-item{width:100%}
+.pretask-card .nexo-item{width:100%;border-color:#f97316;color:#fdba74}
 .pretask-card.open .nexo-item{border-color:#2563eb}
 .pretask-editor{display:none;flex-direction:column;gap:.55rem;padding:.6rem;border:1px solid #1f2937;border-radius:.6rem;background:#0f172a}
 .pretask-card.open .pretask-editor{display:flex}

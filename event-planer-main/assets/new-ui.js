@@ -1405,6 +1405,19 @@
       item.appendChild(el("div","nexo-range",rangeLabel));
     }
     item.appendChild(el("div","mini",pretaskDurationLabel(task)));
+
+    let locationLabel="";
+    if(task.actionType===ACTION_TYPE_TRANSPORT){
+      const flow=transportFlowForTask(task);
+      const originName=locationNameById(flow.origin) || "Sin origen";
+      const destName=locationNameById(flow.destination) || "Sin destino";
+      locationLabel=`${originName} → ${destName}`;
+    }else if(task.locationApplies===false){
+      locationLabel="No aplica";
+    }else{
+      locationLabel=locationNameById(task.locationId) || "Sin localización";
+    }
+    item.appendChild(el("div","mini",locationLabel));
     card.appendChild(item);
 
     const linkRow=el("div","pretask-arrow");
