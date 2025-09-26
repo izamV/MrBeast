@@ -45,34 +45,14 @@
 
   window.openCatTask = (cont)=>{
     cont.innerHTML=""; cont.appendChild(el("h3",null,"Catálogo: Tareas"));
-    const add=el("div","row");
-    const name=el("input","input"); name.placeholder="Nombre";
-    const color=el("input","input"); color.type="color"; color.value="#60a5fa";
-    const typeSel=el("select","input");
-    [
-      {label:"Normal", value:ACTION_TYPE_NORMAL},
-      {label:"Transporte", value:ACTION_TYPE_TRANSPORT}
-    ].forEach(opt=>{ const o=el("option",null,opt.label); o.value=opt.value; typeSel.appendChild(o); });
-    const b=el("button","btn","Añadir");
-    b.onclick=()=>{
-      const n=name.value.trim(); if(!n) return;
-      state.taskTypes.push({
-        id:"T_"+(state.taskTypes.length+1),
-        nombre:n,
-        color:color.value||"#60a5fa",
-        locked:false,
-        tipo:typeSel.value||ACTION_TYPE_NORMAL,
-        quien:"CLIENTE"
-      });
-      name.value=""; emitChanged(); openCatTask(cont);
-    };
-    add.appendChild(name); add.appendChild(color); add.appendChild(typeSel); add.appendChild(b); cont.appendChild(add);
-
     // Lista
     const tbl=el("table"); const tb=el("tbody"); tbl.appendChild(tb);
     // Orden: bloqueados primero
     const order=id=>({[TASK_TRANSP]:0,[TASK_MONTAGE]:1,[TASK_DESMONT]:2}[id]??9);
-    [...state.taskTypes].sort((a,b)=> (a.locked===b.locked? order(a.id)-order(b.id) : (a.locked?-1:1)) || (a.nombre||"").localeCompare(b.nombre||"") )
+    const hiddenBaseTasks=new Set([TASK_TRANSP,TASK_MONTAGE,TASK_DESMONT]);
+    [...state.taskTypes]
+      .filter(t=>!(t.locked && hiddenBaseTasks.has(t.id)))
+      .sort((a,b)=> (a.locked===b.locked? order(a.id)-order(b.id) : (a.locked?-1:1)) || (a.nombre||"").localeCompare(b.nombre||"") )
       .forEach((t,idx)=>{
         const i= state.taskTypes.findIndex(x=>x.id===t.id);
         const tr=el("tr");
