@@ -34,6 +34,7 @@
     if(typeof state.project.view.selectedTaskId === "undefined") state.project.view.selectedTaskId = null;
     if(typeof state.project.view.timelineEditorId === "undefined") state.project.view.timelineEditorId = null;
     if(typeof state.project.view.pretaskEditorId === "undefined") state.project.view.pretaskEditorId = null;
+    if(typeof state.project.view.posttaskEditorId === "undefined") state.project.view.posttaskEditorId = null;
     state.horaInicial = state.horaInicial || {};
     state.localizacionInicial = state.localizacionInicial || {};
   };
@@ -200,9 +201,16 @@
     ensureSequentialMilestonesFrom(task, list);
     if(task?.structureRelation === "milestone"){
       refreshPretaskTreeBounds(task);
+      refreshPosttaskTreeBounds(task);
     }else if(task?.structureRelation === "pre"){
       const root = (getBreadcrumb(task)[0]) || null;
-      if(root) refreshPretaskTreeBounds(root);
+      if(root){
+        refreshPretaskTreeBounds(root);
+        refreshPosttaskTreeBounds(root);
+      }
+    }else if(task?.structureRelation === "post"){
+      const root = (getBreadcrumb(task)[0]) || null;
+      if(root) refreshPosttaskTreeBounds(root);
     }
     syncStaffSessions();
     touch();
@@ -294,6 +302,75 @@
       getTaskChildren(node.id).forEach(child=>{
         if(child.structureRelation === "pre"){
           ensurePretaskBounds(child, rootTask);
+          visit(child);
+        }
+      });
+    };
+    visit(rootTask);
+  };
+
+  const defaultPosttaskLower = (rootTask)=>{
+    if(Number.isFinite(rootTask?.endMin)){
+      return roundToFive(clampToDay(rootTask.endMin));
+    }
+    if(Number.isFinite(rootTask?.startMin) && Number.isFinite(rootTask?.durationMin)){
+      const fallback = rootTask.startMin + Math.max(5, Number(rootTask.durationMin)||PRETASK_DEFAULT_DURATION);
+      return roundToFive(clampToDay(fallback));
+    }
+    return roundToFive(clampToDay(defaultTimelineStart()));
+  };
+
+  const defaultPosttaskUpper = (rootTask, lower, duration)=>{
+    const baseUpper = Math.max(lower + duration, lower);
+    return Math.min(DAY_MAX_MIN, baseUpper);
+  };
+
+  const ensurePosttaskBounds = (task, rootTask)=>{
+    if(!task || task.structureRelation !== "post") return;
+    const duration = Math.max(5, roundToFive(Number(task.durationMin)||PRETASK_DEFAULT_DURATION));
+    const rangeRequested = !!task.limitEarlyMinEnabled || !!task.limitLateMinEnabled;
+    const minLower = defaultPosttaskLower(rootTask);
+    const storedLowerRaw = Number.isFinite(task.limitEarlyMin)
+      ? roundToFive(clampToDay(task.limitEarlyMin))
+      : minLower;
+    let lower = rangeRequested ? storedLowerRaw : minLower;
+    if(lower < minLower) lower = minLower;
+    lower = roundToFive(clampToDay(lower));
+    const maxLower = Math.max(minLower, DAY_MAX_MIN - duration);
+    if(lower > maxLower) lower = maxLower;
+    let upper = Number.isFinite(task.limitLateMin)
+      ? roundToFive(clampToDay(task.limitLateMin))
+      : defaultPosttaskUpper(rootTask, lower, duration);
+    if(!Number.isFinite(upper)) upper = defaultPosttaskUpper(rootTask, lower, duration);
+    let rangeEnabled = rangeRequested;
+    if(rangeEnabled){
+      const minUpperAllowed = lower + duration;
+      if(upper < minUpperAllowed) upper = minUpperAllowed;
+      if(upper > DAY_MAX_MIN) upper = DAY_MAX_MIN;
+      if(upper < lower + duration){
+        rangeEnabled = false;
+      }
+    }
+    if(!rangeEnabled){
+      lower = minLower;
+      upper = defaultPosttaskUpper(rootTask, lower, duration);
+    }
+    if(lower > maxLower) lower = maxLower;
+    if(upper > DAY_MAX_MIN) upper = DAY_MAX_MIN;
+    upper = roundToFive(clampToDay(Math.max(lower + duration, upper)));
+    task.durationMin = duration;
+    task.limitEarlyMin = lower;
+    task.limitLateMin = upper;
+    task.limitEarlyMinEnabled = rangeEnabled;
+    task.limitLateMinEnabled = rangeEnabled;
+  };
+
+  const refreshPosttaskTreeBounds = (rootTask)=>{
+    if(!rootTask) return;
+    const visit=(node)=>{
+      getTaskChildren(node.id).forEach(child=>{
+        if(child.structureRelation === "post"){
+          ensurePosttaskBounds(child, rootTask);
           visit(child);
         }
       });
@@ -740,7 +817,7 @@
     const header=el("div","timeline-head");
     header.appendChild(el("h3",null,"Horario fijo del cliente"));
     let selectedTask = selectedId ? getTaskById(selectedId) : null;
-    if(selectedTask && selectedTask.structureRelation === "pre"){
+    if(selectedTask && (selectedTask.structureRelation === "pre" || selectedTask.structureRelation === "post")){
       const trail=getBreadcrumb(selectedTask);
       const rootNode = trail[0] || null;
       if(rootNode){
@@ -883,7 +960,7 @@
     }
 
     let selectedTask = selectedId ? getTaskById(selectedId) : null;
-    if(selectedTask && selectedTask.structureRelation === "pre"){
+    if(selectedTask && (selectedTask.structureRelation === "pre" || selectedTask.structureRelation === "post")){
       const trail=getBreadcrumb(selectedTask);
       const rootNode = trail[0] || null;
       if(rootNode){
@@ -1013,6 +1090,7 @@
   };
 
   const isPretask = (t)=>t && t.structureRelation === "pre";
+  const isPosttask = (t)=>t && t.structureRelation === "post";
 
   const collectPretaskLevels = (task)=>{
     const result=[[],[],[]];
@@ -1036,14 +1114,53 @@
     return result;
   };
 
-  const drawPretaskLinks = (area, rootTask)=>{
+  const collectPosttaskLevels = (task)=>{
+    const result=[[],[],[]];
+    if(!task) return result;
+    const level1=getTaskChildren(task.id).filter(isPosttask);
+    result[0]=level1.slice();
+    const level2=[];
+    level1.forEach(parent=>{
+      getTaskChildren(parent.id).filter(isPosttask).forEach(child=>{
+        level2.push(child);
+      });
+    });
+    result[1]=level2.slice();
+    const level3=[];
+    level2.forEach(parent=>{
+      getTaskChildren(parent.id).filter(isPosttask).forEach(child=>{
+        level3.push(child);
+      });
+    });
+    result[2]=level3.slice();
+    return result;
+  };
+
+  const TASK_LINK_CONFIG = {
+    pre: {
+      cardSelector: ".pretask-card",
+      linkContainerClass: "pretask-links",
+      rootSelector: ".pretask-root-node",
+      pathClass: "pretask-link-path"
+    },
+    post: {
+      cardSelector: ".posttask-card",
+      linkContainerClass: "posttask-links",
+      rootSelector: ".posttask-root-node",
+      pathClass: "posttask-link-path"
+    }
+  };
+
+  const drawTaskTreeLinks = (area, rootTask, relation)=>{
     if(!(area instanceof HTMLElement)) return;
-    const previous=area.querySelector(".pretask-links");
+    const config=TASK_LINK_CONFIG[relation];
+    if(!config) return;
+    const previous=area.querySelector(`.${config.linkContainerClass}`);
     if(previous) previous.remove();
     const width=area.clientWidth;
     const height=area.clientHeight;
     if(width<=0 || height<=0) return;
-    const cards=Array.from(area.querySelectorAll(".pretask-card"));
+    const cards=Array.from(area.querySelectorAll(config.cardSelector));
     if(!cards.length) return;
     const head=area.querySelector(".nexo-head");
     if(!head) return;
@@ -1058,7 +1175,7 @@
       });
     };
 
-    const rootNode=area.querySelector(".pretask-root-node");
+    const rootNode=area.querySelector(config.rootSelector);
     if(rootNode){
       addAnchor(rootTask.id, rootNode.getBoundingClientRect());
     }else{
@@ -1080,7 +1197,7 @@
     });
     const ns="http://www.w3.org/2000/svg";
     const svg=document.createElementNS(ns,"svg");
-    svg.classList.add("pretask-links");
+    svg.classList.add(config.linkContainerClass);
     svg.setAttribute("width", String(width));
     svg.setAttribute("height", String(height));
     svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
@@ -1105,7 +1222,7 @@
       const endX = endAnchor === childAnchor ? childAnchor.x : parentAnchor.x;
       const path=document.createElementNS(ns,"path");
       path.setAttribute("d", `M ${startX} ${startY} C ${startX} ${midY} ${endX} ${midY} ${endX} ${endY}`);
-      path.setAttribute("class","pretask-link-path");
+      path.setAttribute("class",config.pathClass);
       svg.appendChild(path);
     });
     if(svg.childNodes.length){
@@ -1113,29 +1230,31 @@
     }
   };
 
-  let pretaskLinkFrame = null;
-  const refreshPretaskLinks = ()=>{
-    document.querySelectorAll(".nexo-area.nexo-top[data-task-id]").forEach(area=>{
+  let taskTreeLinkFrame = null;
+  const refreshTaskTreeLinks = ()=>{
+    document.querySelectorAll(".nexo-area[data-task-id]").forEach(area=>{
+      const relation=area.dataset.relation;
+      if(relation!="pre" && relation!="post") return;
       const taskId=area.dataset.taskId;
       const task=taskId ? getTaskById(taskId) : null;
-      if(task) drawPretaskLinks(area, task);
+      if(task) drawTaskTreeLinks(area, task, relation);
     });
   };
 
-  const schedulePretaskLinkRedraw = ()=>{
+  const scheduleTaskTreeLinkRedraw = ()=>{
     if(typeof window === "undefined") return;
-    if(pretaskLinkFrame!=null) cancelAnimationFrame(pretaskLinkFrame);
-    pretaskLinkFrame=requestAnimationFrame(()=>{
-      pretaskLinkFrame=null;
-      refreshPretaskLinks();
+    if(taskTreeLinkFrame!=null) cancelAnimationFrame(taskTreeLinkFrame);
+    taskTreeLinkFrame=requestAnimationFrame(()=>{
+      taskTreeLinkFrame=null;
+      refreshTaskTreeLinks();
     });
   };
 
-  let pretaskResizeBound=false;
-  const ensurePretaskResizeListener = ()=>{
-    if(typeof window === "undefined" || pretaskResizeBound) return;
-    pretaskResizeBound=true;
-    window.addEventListener("resize", ()=> schedulePretaskLinkRedraw());
+  let taskTreeResizeBound=false;
+  const ensureTaskTreeResizeListener = ()=>{
+    if(typeof window === "undefined" || taskTreeResizeBound) return;
+    taskTreeResizeBound=true;
+    window.addEventListener("resize", ()=> scheduleTaskTreeLinkRedraw());
   };
 
   const createPretaskForLevel = (rootTask, level, parents)=>{
@@ -1478,7 +1597,7 @@
     const area=el("div","nexo-area nexo-top");
     area.dataset.relation="pre";
     area.dataset.taskId = task.id;
-    ensurePretaskResizeListener();
+    ensureTaskTreeResizeListener();
     const head=el("div","nexo-head");
     head.appendChild(el("h4",null,"Pretareas"));
     area.appendChild(head);
@@ -1496,7 +1615,366 @@
     const rootAnchor=el("div","pretask-root-node");
     rootAnchor.dataset.taskId = task.id;
     area.appendChild(rootAnchor);
-    schedulePretaskLinkRedraw();
+    scheduleTaskTreeLinkRedraw();
+    return area;
+  };
+
+  const createPosttaskForLevel = (rootTask, level, parents)=>{
+    if(!rootTask) return;
+    const parentList = level===1 ? [rootTask] : (parents||[]);
+    if(level>1 && !parentList.length){
+      alert("Primero crea una posttarea del nivel inferior.");
+      return;
+    }
+    const sortedParents = parentList.slice().sort((a,b)=>labelForTask(a).localeCompare(labelForTask(b)));
+    const parent = sortedParents[0];
+    if(!parent) return;
+    const task=createTask({ parentId: parent.id, relation:"post" });
+    task.actionName = "";
+    task.durationMin = PRETASK_DEFAULT_DURATION;
+    const lower = defaultPosttaskLower(rootTask);
+    task.limitEarlyMinEnabled = false;
+    task.limitLateMinEnabled = false;
+    task.limitEarlyMin = lower;
+    task.limitLateMin = defaultPosttaskUpper(rootTask, lower, task.durationMin);
+    ensurePosttaskBounds(task, rootTask);
+    touchTask(task);
+    state.project.view.selectedTaskId = rootTask.id;
+    state.project.view.posttaskEditorId = task.id;
+    renderClient();
+  };
+
+  const renderPosttaskEditor = (rootTask, level, task, parents)=>{
+    const editor=el("div","pretask-editor");
+
+    const nameField=el("div","pretask-field");
+    nameField.appendChild(el("span","pretask-field-label","Nombre de la tarea"));
+    const nameInput=el("input","input pretask-input");
+    nameInput.type="text";
+    nameInput.placeholder="Escribe un nombre";
+    nameInput.value=task.actionName||"";
+    nameInput.oninput=()=>{ task.actionName = nameInput.value; };
+    nameInput.onblur=()=>{ touchTask(task); state.project.view.posttaskEditorId = task.id; renderClient(); };
+    nameField.appendChild(nameInput);
+    editor.appendChild(nameField);
+
+    const durationField=el("div","pretask-field");
+    durationField.appendChild(el("span","pretask-field-label","Duración"));
+    const durationControls=el("div","pretask-duration");
+    const minus=el("button","pretask-step","−"); minus.type="button";
+    const plus=el("button","pretask-step","+"); plus.type="button";
+    const durationInput=el("input","input pretask-duration-input");
+    durationInput.type="number";
+    durationInput.step="5";
+    durationInput.min="5";
+    durationInput.inputMode="numeric";
+    durationInput.setAttribute("aria-label","Duración en minutos");
+    const currentDuration=()=> Math.max(5, roundToFive(Number(task.durationMin)||PRETASK_DEFAULT_DURATION));
+    const updateDurationButtons=()=>{
+      const current=currentDuration();
+      minus.disabled = current<=5;
+      durationInput.value = String(current);
+    };
+    const commitDuration=(value)=>{
+      const parsed=Math.max(5, roundToFive(Number(value)||currentDuration()));
+      if(parsed===currentDuration()){
+        updateDurationButtons();
+        return;
+      }
+      task.durationMin = parsed;
+      ensurePosttaskBounds(task, rootTask);
+      touchTask(task);
+      state.project.view.posttaskEditorId = task.id;
+      renderClient();
+    };
+    const adjustDuration=(delta)=>{
+      const next=currentDuration()+delta;
+      if(next<5) return;
+      commitDuration(next);
+    };
+    minus.onclick=()=>adjustDuration(-5);
+    plus.onclick=()=>adjustDuration(5);
+    durationInput.onchange=()=>commitDuration(durationInput.value);
+    durationInput.onblur=()=>commitDuration(durationInput.value);
+    durationControls.appendChild(minus);
+    durationControls.appendChild(durationInput);
+    durationControls.appendChild(plus);
+    durationField.appendChild(durationControls);
+    editor.appendChild(durationField);
+
+    updateDurationButtons();
+
+    const locationField=el("div","pretask-field");
+    locationField.appendChild(el("span","pretask-field-label","Localización"));
+    const locationSelect=el("select","input");
+    const emptyOption=el("option",null,"- seleccionar -"); emptyOption.value="";
+    locationSelect.appendChild(emptyOption);
+    (state.locations||[]).forEach(loc=>{
+      const opt=el("option",null,loc.nombre||"Localización");
+      opt.value=loc.id;
+      if(String(loc.id)===String(task.locationId)) opt.selected=true;
+      locationSelect.appendChild(opt);
+    });
+    locationSelect.onchange=()=>{
+      task.locationId = locationSelect.value || null;
+      touchTask(task);
+      state.project.view.posttaskEditorId = task.id;
+      renderClient();
+    };
+    locationField.appendChild(locationSelect);
+    editor.appendChild(locationField);
+
+    const defaultLower = defaultPosttaskLower(rootTask);
+    const duration=Math.max(5, roundToFive(Number(task.durationMin)||PRETASK_DEFAULT_DURATION));
+    const rangeEnabled=!!task.limitEarlyMinEnabled || !!task.limitLateMinEnabled;
+    const storedLower=Number.isFinite(task.limitEarlyMin) ? roundToFive(clampToDay(task.limitEarlyMin)) : defaultLower;
+    const effectiveLower=rangeEnabled ? storedLower : defaultLower;
+    const maxLowerForDuration=Math.max(defaultLower, DAY_MAX_MIN - duration);
+    const upperDefault=defaultPosttaskUpper(rootTask, effectiveLower, duration);
+    const storedUpper=Number.isFinite(task.limitLateMin) ? roundToFive(clampToDay(task.limitLateMin)) : upperDefault;
+    const minUpperForInput=Math.max(effectiveLower + duration, defaultLower + duration);
+
+    const timeField=el("div","pretask-field");
+    timeField.appendChild(el("span","pretask-field-label","Franja horaria"));
+    const timeGrid=el("div","pretask-time-grid");
+
+    const toggleWrap=el("div","pretask-time");
+    const rangeToggleLabel=el("label","pretask-time-toggle");
+    const rangeToggle=el("input","pretask-time-checkbox");
+    rangeToggle.type="checkbox";
+    rangeToggle.checked=rangeEnabled;
+    rangeToggle.onchange=()=>{
+      const enabled=rangeToggle.checked;
+      task.limitEarlyMinEnabled = enabled;
+      task.limitLateMinEnabled = enabled;
+      ensurePosttaskBounds(task, rootTask);
+      touchTask(task);
+      state.project.view.posttaskEditorId = task.id;
+      renderClient();
+    };
+    rangeToggleLabel.appendChild(rangeToggle);
+    rangeToggleLabel.appendChild(el("span","pretask-time-label","Definir franja"));
+    toggleWrap.appendChild(rangeToggleLabel);
+    timeGrid.appendChild(toggleWrap);
+
+    const lowerWrap=el("div","pretask-time");
+    lowerWrap.appendChild(el("span","pretask-time-label","Inicio más temprano"));
+    const lowerInputWrap=el("div","pretask-time-input-wrap");
+    const lowerInput=el("input","input pretask-time-input");
+    lowerInput.type="time";
+    lowerInput.step="300";
+    lowerInput.min=formatTimeForInput(defaultLower);
+    lowerInput.max=formatTimeForInput(maxLowerForDuration);
+    lowerInput.value=formatTimeForInput(Math.max(defaultLower, Math.min(effectiveLower, maxLowerForDuration)));
+    lowerInput.disabled=!rangeEnabled;
+    lowerInput.onchange=()=>{
+      const parsed=parseTimeFromInput(lowerInput.value);
+      if(parsed==null) return;
+      task.limitEarlyMin = parsed;
+      ensurePosttaskBounds(task, rootTask);
+      touchTask(task);
+      state.project.view.posttaskEditorId = task.id;
+      renderClient();
+    };
+    lowerInput.onblur=()=>{
+      const parsed=parseTimeFromInput(lowerInput.value);
+      if(parsed==null) return;
+      task.limitEarlyMin = parsed;
+      ensurePosttaskBounds(task, rootTask);
+      touchTask(task);
+      state.project.view.posttaskEditorId = task.id;
+      renderClient();
+    };
+    lowerInputWrap.hidden=!rangeEnabled;
+    lowerInputWrap.appendChild(lowerInput);
+    lowerWrap.appendChild(lowerInputWrap);
+    timeGrid.appendChild(lowerWrap);
+
+    const upperWrap=el("div","pretask-time");
+    upperWrap.appendChild(el("span","pretask-time-label","Inicio más tarde"));
+    const upperInputWrap=el("div","pretask-time-input-wrap");
+    const upperInput=el("input","input pretask-time-input");
+    upperInput.type="time";
+    upperInput.step="300";
+    upperInput.min=formatTimeForInput(rangeEnabled ? Math.max(minUpperForInput, effectiveLower + duration) : minUpperForInput);
+    upperInput.max=formatTimeForInput(DAY_MAX_MIN);
+    upperInput.value=formatTimeForInput(Math.max(minUpperForInput, Math.min(storedUpper, DAY_MAX_MIN)));
+    upperInput.disabled=!rangeEnabled;
+    upperInput.onchange=()=>{
+      const parsed=parseTimeFromInput(upperInput.value);
+      if(parsed==null) return;
+      task.limitLateMin = parsed;
+      ensurePosttaskBounds(task, rootTask);
+      touchTask(task);
+      state.project.view.posttaskEditorId = task.id;
+      renderClient();
+    };
+    upperInput.onblur=()=>{
+      const parsed=parseTimeFromInput(upperInput.value);
+      if(parsed==null) return;
+      task.limitLateMin = parsed;
+      ensurePosttaskBounds(task, rootTask);
+      touchTask(task);
+      state.project.view.posttaskEditorId = task.id;
+      renderClient();
+    };
+    upperInputWrap.hidden=!rangeEnabled;
+    upperInputWrap.appendChild(upperInput);
+    upperWrap.appendChild(upperInputWrap);
+    timeGrid.appendChild(upperWrap);
+
+    if(!rangeEnabled){
+      const note=el("div","pretask-time-note","Sin restricciones horarias definidas");
+      timeGrid.appendChild(note);
+    }
+
+    timeField.appendChild(timeGrid);
+    editor.appendChild(timeField);
+
+    if(level>1){
+      const parentField=el("div","pretask-field");
+      parentField.appendChild(el("span","pretask-field-label",`Vincular con nivel ${level-1}`));
+      const select=el("select","input");
+      const optionEmpty=el("option",null,"- seleccionar -"); optionEmpty.value=""; select.appendChild(optionEmpty);
+      const parentOptions=(parents||[]).slice().sort((a,b)=>labelForTask(a).localeCompare(labelForTask(b)));
+      parentOptions.forEach(parent=>{
+        const opt=el("option",null,labelForTask(parent));
+        opt.value=parent.id;
+        if(task.structureParentId===parent.id) opt.selected=true;
+        select.appendChild(opt);
+      });
+      if(!parentOptions.some(parent=>parent.id===task.structureParentId)){
+        select.value="";
+      }
+      select.onchange=()=>{
+        const val=select.value;
+        if(!val){
+          select.value=task.structureParentId || "";
+          return;
+        }
+        task.structureParentId = val;
+        touchTask(task);
+        state.project.view.posttaskEditorId = task.id;
+        renderClient();
+      };
+      parentField.appendChild(select);
+      editor.appendChild(parentField);
+    }
+
+    updateDurationButtons();
+    return editor;
+  };
+
+  const renderPosttaskCard = (rootTask, level, task, parents)=>{
+    const card=el("div","posttask-card");
+    card.dataset.taskId = task.id;
+    const isOpen = state.project.view.posttaskEditorId === task.id;
+    if(isOpen) card.classList.add("open");
+
+    const item=el("button","nexo-item","");
+    if(!isTaskComplete(task)) item.classList.add("pending");
+    if(isOpen) item.classList.add("active");
+    item.onclick=()=>{
+      state.project.view.posttaskEditorId = isOpen ? null : task.id;
+      renderClient();
+    };
+    item.appendChild(el("div","nexo-name",labelForTask(task)));
+    const rangeLabel=pretaskRangeLabel(task);
+    if(rangeLabel){
+      item.appendChild(el("div","nexo-range",rangeLabel));
+    }
+    item.appendChild(el("div","mini",pretaskDurationLabel(task)));
+
+    let locationLabel="";
+    if(task.actionType===ACTION_TYPE_TRANSPORT){
+      const flow=transportFlowForTask(task);
+      const originName=locationNameById(flow.origin) || "Sin origen";
+      const destName=locationNameById(flow.destination) || "Sin destino";
+      locationLabel=`${originName} → ${destName}`;
+    }else if(task.locationApplies===false){
+      locationLabel="No aplica";
+    }else{
+      locationLabel=locationNameById(task.locationId) || "Sin localización";
+    }
+    item.appendChild(el("div","mini",locationLabel));
+    card.appendChild(item);
+
+    const linkRow=el("div","pretask-arrow");
+    linkRow.appendChild(el("span","pretask-arrow-icon","↳"));
+    let parentTask = null;
+    if(level===1){
+      parentTask = rootTask;
+      card.dataset.parentId = rootTask.id;
+    }else{
+      parentTask = (parents||[]).find(parent=>parent.id===task.structureParentId) || null;
+    }
+    if(level>1){
+      if(parentTask){
+        card.dataset.parentId = parentTask.id;
+      }else{
+        delete card.dataset.parentId;
+      }
+    }
+    const parentLabel = parentTask ? labelForTask(parentTask) : "Sin vincular";
+    linkRow.appendChild(el("span","pretask-arrow-label",parentLabel));
+    card.appendChild(linkRow);
+
+    if(isOpen){
+      card.appendChild(renderPosttaskEditor(rootTask, level, task, parents));
+    }
+
+    return card;
+  };
+
+  const renderPosttaskRow = (rootTask, level, tasks, parents)=>{
+    const row=el("div","posttask-row");
+    row.dataset.level=String(level);
+    const head=el("div","posttask-row-head");
+    head.appendChild(el("span","posttask-row-title",`Nivel ${level}`));
+    const controls=el("div","pretask-controls");
+    const createBtn=el("button","btn small","Crear");
+    createBtn.onclick=()=> createPosttaskForLevel(rootTask, level, parents);
+    if(level>1 && !(parents&&parents.length)) createBtn.disabled=true;
+    controls.appendChild(createBtn);
+    head.appendChild(controls);
+    row.appendChild(head);
+    const body=el("div","posttask-row-body");
+    if(!tasks.length){
+      body.appendChild(el("div","nexo-empty","Sin tareas"));
+    }else{
+      const list=el("div","posttask-list");
+      const sorted=tasks.slice().sort((a,b)=>labelForTask(a).localeCompare(labelForTask(b)));
+      sorted.forEach(post=>{
+        list.appendChild(renderPosttaskCard(rootTask, level, post, parents));
+      });
+      body.appendChild(list);
+    }
+    row.appendChild(body);
+    return row;
+  };
+
+  const renderPosttaskArea = (task)=>{
+    const area=el("div","nexo-area nexo-bottom");
+    area.dataset.relation="post";
+    area.dataset.taskId = task.id;
+    ensureTaskTreeResizeListener();
+    const head=el("div","nexo-head");
+    head.appendChild(el("h4",null,"Posttareas"));
+    area.appendChild(head);
+    const rootAnchor=el("div","posttask-root-node");
+    rootAnchor.dataset.taskId = task.id;
+    area.appendChild(rootAnchor);
+    const [level1, level2, level3]=collectPosttaskLevels(task);
+    const editingId = state.project.view.posttaskEditorId;
+    if(editingId && ![...level1,...level2,...level3].some(post=>post.id===editingId)){
+      state.project.view.posttaskEditorId = null;
+    }
+    const grid=el("div","posttask-grid");
+    grid.appendChild(renderPosttaskRow(task,1,level1,[task]));
+    grid.appendChild(renderPosttaskRow(task,2,level2,level1));
+    grid.appendChild(renderPosttaskRow(task,3,level3,level2));
+    area.appendChild(grid);
+    scheduleTaskTreeLinkRedraw();
     return area;
   };
 
@@ -1635,7 +2113,7 @@
     grid.appendChild(renderNexoArea(task,"parallel","Concurrencia","left"));
     grid.appendChild(center);
     grid.appendChild(renderMaterialArea(task));
-    grid.appendChild(renderNexoArea(task,"post","Posttareas","bottom"));
+    grid.appendChild(renderPosttaskArea(task));
 
     editor.appendChild(grid);
     container.appendChild(editor);
@@ -1671,7 +2149,7 @@
       state.project.view.selectedTaskId=selectedId;
     }
     let selectedTask = selectedId ? getTaskById(selectedId) : null;
-    if(selectedTask && selectedTask.structureRelation === "pre"){
+    if(selectedTask && (selectedTask.structureRelation === "pre" || selectedTask.structureRelation === "post")){
       const trail=getBreadcrumb(selectedTask);
       const rootNode = trail[0] || null;
       if(rootNode){
