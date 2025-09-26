@@ -277,12 +277,12 @@ table.matlist td.act{width:120px}
 .materials-area{gap:1rem}
 .materials-editor{display:flex;flex-direction:column;gap:.75rem}
 .material-rows{display:flex;flex-direction:column;gap:.5rem}
-.material-row{display:grid;grid-template-columns:1fr 120px auto;gap:.5rem;align-items:center;background:#0b1220;border:1px solid #1f2937;border-radius:.6rem;padding:.6rem}
+.material-row{display:grid;grid-template-columns:minmax(0,1fr) 120px auto;gap:.5rem;align-items:center;background:#0b1220;border:1px solid #1f2937;border-radius:.6rem;padding:.6rem}
 .material-field{display:flex;flex-direction:column;gap:.25rem;font-size:.85rem;color:#94a3b8}
 .material-field-label{font-size:.75rem;letter-spacing:.08em;text-transform:uppercase}
 .material-field.qty input{font-variant-numeric:tabular-nums}
-.material-actions{display:flex;align-items:center;justify-content:flex-end}
-.material-actions .btn{white-space:nowrap}
+.material-actions{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:.4rem}
+.material-actions .btn{white-space:nowrap;max-width:100%}
 .materials-catalog{display:flex;flex-direction:column;gap:.75rem;padding-top:.5rem;border-top:1px solid rgba(148,163,184,.2)}
 .material-create-row{display:flex;gap:.5rem;flex-wrap:wrap}
 .material-create-row .input{flex:1 1 180px}
@@ -307,6 +307,12 @@ table.matlist td.act{width:120px}
 @media (max-width:1100px){
   .client-layout{grid-template-columns:1fr}
   .nexo-grid{grid-template-areas:"top" "center" "right" "left" "bottom";grid-template-columns:1fr}
+}
+
+@media (max-width:720px){
+  .material-row{grid-template-columns:1fr;}
+  .material-actions{justify-content:flex-start;width:100%;}
+  .material-actions .btn{width:100%;}
 }
 
 /* === EP PATCH 2025: Layout filas horario renovado === */
