@@ -293,6 +293,7 @@ table.matlist td.act{width:120px}
 .material-field-label{font-size:.75rem;letter-spacing:.08em;text-transform:uppercase}
 .material-field.qty input{font-variant-numeric:tabular-nums}
 .material-qty-controls{display:flex;align-items:center;gap:.5rem}
+.material-qty-buttons{display:flex;flex-direction:column;gap:.35rem}
 .material-qty-controls input{flex:0 0 4rem;text-align:center}
 .material-qty-btn{background:#111827;border:1px solid #1f2937;color:#e5e7eb;width:2rem;height:2rem;border-radius:.5rem;display:flex;align-items:center;justify-content:center;font-size:1.1rem;line-height:1;cursor:pointer}
 .material-qty-btn:disabled{opacity:.45;cursor:not-allowed}

@@ -1248,17 +1248,19 @@
         const qtyWrap=el("label","material-field qty");
         qtyWrap.appendChild(el("span","material-field-label","Cantidad"));
         const qtyControls=el("div","material-qty-controls");
+        const buttonGroup=el("div","material-qty-buttons");
         const decrementBtn=el("button","material-qty-btn","-");
         decrementBtn.type="button";
+        const incrementBtn=el("button","material-qty-btn","+");
+        incrementBtn.type="button";
+        buttonGroup.appendChild(decrementBtn);
+        buttonGroup.appendChild(incrementBtn);
         const qtyInput=el("input","input");
         qtyInput.type="number";
         qtyInput.min="1";
         qtyInput.step="1";
-        const incrementBtn=el("button","material-qty-btn","+");
-        incrementBtn.type="button";
-        qtyControls.appendChild(decrementBtn);
+        qtyControls.appendChild(buttonGroup);
         qtyControls.appendChild(qtyInput);
-        qtyControls.appendChild(incrementBtn);
         qtyWrap.appendChild(qtyControls);
         row.appendChild(qtyWrap);
 
@@ -1269,6 +1271,9 @@
         };
 
         const commitQty = (value, shouldRender=false)=>{
+          if(typeof value === "string" && value.trim()===""){
+            return;
+          }
           const next = normalizeQuantity(value);
           const prev = normalizeQuantity(mat.cantidad);
           if(prev !== next){
