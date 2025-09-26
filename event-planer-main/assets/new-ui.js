@@ -1086,13 +1086,11 @@
     durationInput.min="5";
     durationInput.inputMode="numeric";
     durationInput.setAttribute("aria-label","Duración en minutos");
-    const durationValue=el("span","pretask-duration-value","");
     const currentDuration=()=> Math.max(5, roundToFive(Number(task.durationMin)||PRETASK_DEFAULT_DURATION));
     const updateDurationButtons=()=>{
       const current=currentDuration();
       minus.disabled = current<=5;
       durationInput.value = String(current);
-      durationValue.textContent = `${current} min`;
     };
     const commitDuration=(value)=>{
       const parsed=Math.max(5, roundToFive(Number(value)||currentDuration()));
@@ -1115,20 +1113,33 @@
     plus.onclick=()=>adjustDuration(5);
     durationInput.onchange=()=>commitDuration(durationInput.value);
     durationInput.onblur=()=>commitDuration(durationInput.value);
-    durationInput.oninput=()=>{
-      const preview=Math.max(5, roundToFive(Number(durationInput.value)||0));
-      if(Number.isFinite(preview)){
-        durationValue.textContent = `${preview} min`;
-      }
-    };
     durationControls.appendChild(minus);
     durationControls.appendChild(durationInput);
-    durationControls.appendChild(durationValue);
     durationControls.appendChild(plus);
     durationField.appendChild(durationControls);
     editor.appendChild(durationField);
 
     updateDurationButtons();
+
+    const locationField=el("div","pretask-field");
+    locationField.appendChild(el("span","pretask-field-label","Localización"));
+    const locationSelect=el("select","input");
+    const emptyOption=el("option",null,"- seleccionar -"); emptyOption.value="";
+    locationSelect.appendChild(emptyOption);
+    (state.locations||[]).forEach(loc=>{
+      const opt=el("option",null,loc.nombre||"Localización");
+      opt.value=loc.id;
+      if(String(loc.id)===String(task.locationId)) opt.selected=true;
+      locationSelect.appendChild(opt);
+    });
+    locationSelect.onchange=()=>{
+      task.locationId = locationSelect.value || null;
+      touchTask(task);
+      state.project.view.pretaskEditorId = task.id;
+      renderClient();
+    };
+    locationField.appendChild(locationSelect);
+    editor.appendChild(locationField);
 
     const duration=Math.max(5, roundToFive(Number(task.durationMin)||PRETASK_DEFAULT_DURATION));
     const rangeEnabled=!!task.limitEarlyMinEnabled || !!task.limitLateMinEnabled;
