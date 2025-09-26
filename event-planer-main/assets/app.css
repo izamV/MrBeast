@@ -288,17 +288,18 @@ table.matlist td.act{width:120px}
 .material-summary-row.pending .material-summary-name{color:#fca5a5}
 .warn-text{color:#fca5a5}
 .material-rows{display:flex;flex-direction:column;gap:.5rem}
-.material-row{display:grid;grid-template-columns:minmax(0,1fr) 120px auto;gap:.5rem;align-items:center;background:#0b1220;border:1px solid #1f2937;border-radius:.6rem;padding:.6rem}
+.material-row{position:relative;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:.75rem;align-items:flex-start;background:#0b1220;border:1px solid #1f2937;border-radius:.6rem;padding:1rem;padding-right:3rem}
 .material-field{display:flex;flex-direction:column;gap:.25rem;font-size:.85rem;color:#94a3b8}
 .material-field-label{font-size:.75rem;letter-spacing:.08em;text-transform:uppercase}
 .material-field.qty input{font-variant-numeric:tabular-nums}
 .material-qty-controls{display:flex;align-items:center;gap:.5rem}
 .material-qty-buttons{display:flex;flex-direction:column;gap:.35rem}
-.material-qty-controls input{flex:0 0 4rem;text-align:center}
+.material-qty-controls input{flex:1 1 4rem;max-width:4.5rem;text-align:center}
 .material-qty-btn{background:#111827;border:1px solid #1f2937;color:#e5e7eb;width:2rem;height:2rem;border-radius:.5rem;display:flex;align-items:center;justify-content:center;font-size:1.1rem;line-height:1;cursor:pointer}
 .material-qty-btn:disabled{opacity:.45;cursor:not-allowed}
-.material-actions{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:.4rem}
-.material-actions .btn{white-space:nowrap;max-width:100%}
+.material-remove-btn{position:absolute;top:.6rem;right:.6rem;background:rgba(248,113,113,.16);border:1px solid rgba(248,113,113,.5);color:#fca5a5;width:1.8rem;height:1.8rem;border-radius:9999px;display:flex;align-items:center;justify-content:center;font-size:1rem;font-weight:700;line-height:1;cursor:pointer;transition:background .2s ease,border-color .2s ease,color .2s ease}
+.material-remove-btn:hover{background:rgba(248,113,113,.3);border-color:#f87171;color:#fecaca}
+.material-remove-btn:focus{outline:none;box-shadow:0 0 0 2px rgba(248,113,113,.35)}
 .materials-catalog{display:flex;flex-direction:column;gap:.75rem;padding-top:.5rem;border-top:1px solid rgba(148,163,184,.2)}
 .material-create-row{display:flex;gap:.5rem;flex-wrap:wrap}
 .material-create-row .input{flex:1 1 180px}
@@ -326,9 +327,7 @@ table.matlist td.act{width:120px}
 }
 
 @media (max-width:720px){
-  .material-row{grid-template-columns:1fr;}
-  .material-actions{justify-content:flex-start;width:100%;}
-  .material-actions .btn{width:100%;}
+  .material-row{grid-template-columns:1fr;padding-right:2.75rem;}
 }
 
 /* === EP PATCH 2025: Layout filas horario renovado === */
