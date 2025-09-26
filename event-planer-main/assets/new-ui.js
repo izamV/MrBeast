@@ -75,7 +75,12 @@
     task.endMin = toNumberOrNull(task.endMin);
     task.durationMin = Number.isFinite(Number(task.durationMin)) ? Math.max(5, Math.round(Number(task.durationMin))) : null;
     if(task.startMin != null && task.endMin != null){
-      task.durationMin = Math.max(5, task.endMin - task.startMin);
+      const computedDuration = Math.max(5, task.endMin - task.startMin);
+      if(task.structureRelation === "pre"){
+        if(!Number.isFinite(Number(task.durationMin))) task.durationMin = computedDuration;
+      }else{
+        task.durationMin = computedDuration;
+      }
     }
     if(task.durationMin == null) task.durationMin = 60;
     task.limitEarlyMin = toNumberOrNull(task.limitEarlyMin);
