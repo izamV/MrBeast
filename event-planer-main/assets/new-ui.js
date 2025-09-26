@@ -1163,9 +1163,9 @@
       state.project.view.pretaskEditorId = null;
     }
     const grid=el("div","pretask-grid");
-    grid.appendChild(renderPretaskRow(task,1,level1,[task]));
-    grid.appendChild(renderPretaskRow(task,2,level2,level1));
     grid.appendChild(renderPretaskRow(task,3,level3,level2));
+    grid.appendChild(renderPretaskRow(task,2,level2,level1));
+    grid.appendChild(renderPretaskRow(task,1,level1,[task]));
     area.appendChild(grid);
     return area;
   };
