@@ -51,7 +51,7 @@
 
   const ensureMaterial = (m)=>({
     materialTypeId: m?.materialTypeId || null,
-    cantidad: Number.isFinite(Number(m?.cantidad)) ? Number(m.cantidad) : 0
+    cantidad: Math.max(1, Math.round(Number.isFinite(Number(m?.cantidad)) ? Number(m.cantidad) : 1))
   });
 
   const defaultVehicleId = ()=>{
@@ -1125,8 +1125,8 @@
 
   const normalizeQuantity = (value)=>{
     const num = Number(value);
-    if(!Number.isFinite(num)) return 0;
-    return Math.max(0, Math.round(num));
+    if(!Number.isFinite(num)) return 1;
+    return Math.max(1, Math.round(num));
   };
 
   const formatQuantityLabel = (value)=>{
@@ -1247,28 +1247,50 @@
 
         const qtyWrap=el("label","material-field qty");
         qtyWrap.appendChild(el("span","material-field-label","Cantidad"));
+        const qtyControls=el("div","material-qty-controls");
+        const decrementBtn=el("button","material-qty-btn","-");
+        decrementBtn.type="button";
         const qtyInput=el("input","input");
         qtyInput.type="number";
-        qtyInput.min="0";
+        qtyInput.min="1";
         qtyInput.step="1";
-        qtyInput.value = String(normalizeQuantity(mat.cantidad));
-        const commitQty=()=>{
-          const val=normalizeQuantity(qtyInput.value);
-          mat.cantidad = val;
+        const incrementBtn=el("button","material-qty-btn","+");
+        incrementBtn.type="button";
+        qtyControls.appendChild(decrementBtn);
+        qtyControls.appendChild(qtyInput);
+        qtyControls.appendChild(incrementBtn);
+        qtyWrap.appendChild(qtyControls);
+        row.appendChild(qtyWrap);
+
+        const syncQtyUI = ()=>{
+          const val = normalizeQuantity(mat.cantidad);
           qtyInput.value = String(val);
-          touchTask(task);
+          decrementBtn.disabled = val <= 1;
         };
-        qtyInput.oninput=()=>{
-          const num = Number(qtyInput.value);
-          if(Number.isFinite(num)){
-            mat.cantidad = Math.max(0, Math.round(num));
+
+        const commitQty = (value, shouldRender=false)=>{
+          const next = normalizeQuantity(value);
+          const prev = normalizeQuantity(mat.cantidad);
+          if(prev !== next){
+            mat.cantidad = next;
             touchTask(task);
           }
+          syncQtyUI();
+          if(shouldRender && prev !== next) renderClient();
         };
-        qtyInput.onchange=()=>{ commitQty(); renderClient(); };
-        qtyInput.onblur=()=>{ qtyInput.value = String(normalizeQuantity(qtyInput.value)); };
-        qtyWrap.appendChild(qtyInput);
-        row.appendChild(qtyWrap);
+
+        syncQtyUI();
+
+        qtyInput.oninput=()=>{ commitQty(qtyInput.value); };
+        qtyInput.onchange=()=>{ commitQty(qtyInput.value, true); };
+        qtyInput.onblur=()=>{ syncQtyUI(); };
+
+        const adjustQty = (delta)=>{
+          const current = normalizeQuantity(mat.cantidad);
+          commitQty(current + delta, true);
+        };
+        decrementBtn.onclick=()=>{ adjustQty(-1); };
+        incrementBtn.onclick=()=>{ adjustQty(1); };
 
         const actions=el("div","material-actions");
         const removeBtn=el("button","btn danger small","Quitar");
