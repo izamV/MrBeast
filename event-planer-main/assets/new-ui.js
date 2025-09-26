@@ -1036,6 +1036,90 @@
     return result;
   };
 
+  const drawPretaskLinks = (area, rootTask)=>{
+    if(!(area instanceof HTMLElement)) return;
+    const previous=area.querySelector(".pretask-links");
+    if(previous) previous.remove();
+    const width=area.clientWidth;
+    const height=area.clientHeight;
+    if(width<=0 || height<=0) return;
+    const cards=Array.from(area.querySelectorAll(".pretask-card"));
+    if(!cards.length) return;
+    const head=area.querySelector(".nexo-head");
+    if(!head) return;
+    const areaRect=area.getBoundingClientRect();
+    const anchors=new Map();
+    const headRect=head.getBoundingClientRect();
+    anchors.set(rootTask.id, {
+      x: headRect.left + headRect.width/2 - areaRect.left,
+      y: headRect.bottom - areaRect.top
+    });
+    cards.forEach(card=>{
+      const taskId=card.dataset.taskId;
+      const item=card.querySelector(".nexo-item");
+      if(!taskId || !item) return;
+      const rect=item.getBoundingClientRect();
+      anchors.set(taskId, {
+        x: rect.left + rect.width/2 - areaRect.left,
+        y: rect.bottom - areaRect.top
+      });
+    });
+    const ns="http://www.w3.org/2000/svg";
+    const svg=document.createElementNS(ns,"svg");
+    svg.classList.add("pretask-links");
+    svg.setAttribute("width", String(width));
+    svg.setAttribute("height", String(height));
+    svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+    cards.forEach(card=>{
+      const parentId=card.dataset.parentId;
+      const taskId=card.dataset.taskId;
+      if(!parentId || !taskId) return;
+      const parentPoint=anchors.get(parentId);
+      const item=card.querySelector(".nexo-item");
+      if(!parentPoint || !item) return;
+      const rect=item.getBoundingClientRect();
+      const childPoint={
+        x: rect.left + rect.width/2 - areaRect.left,
+        y: rect.top - areaRect.top
+      };
+      const startY=parentPoint.y + 2;
+      const endY=childPoint.y - 2;
+      const midY=(startY + endY)/2;
+      const path=document.createElementNS(ns,"path");
+      path.setAttribute("d", `M ${parentPoint.x} ${startY} C ${parentPoint.x} ${midY} ${childPoint.x} ${midY} ${childPoint.x} ${endY}`);
+      path.setAttribute("class","pretask-link-path");
+      svg.appendChild(path);
+    });
+    if(svg.childNodes.length){
+      area.appendChild(svg);
+    }
+  };
+
+  let pretaskLinkFrame = null;
+  const refreshPretaskLinks = ()=>{
+    document.querySelectorAll(".nexo-area.nexo-top[data-task-id]").forEach(area=>{
+      const taskId=area.dataset.taskId;
+      const task=taskId ? getTaskById(taskId) : null;
+      if(task) drawPretaskLinks(area, task);
+    });
+  };
+
+  const schedulePretaskLinkRedraw = ()=>{
+    if(typeof window === "undefined") return;
+    if(pretaskLinkFrame!=null) cancelAnimationFrame(pretaskLinkFrame);
+    pretaskLinkFrame=requestAnimationFrame(()=>{
+      pretaskLinkFrame=null;
+      refreshPretaskLinks();
+    });
+  };
+
+  let pretaskResizeBound=false;
+  const ensurePretaskResizeListener = ()=>{
+    if(typeof window === "undefined" || pretaskResizeBound) return;
+    pretaskResizeBound=true;
+    window.addEventListener("resize", ()=> schedulePretaskLinkRedraw());
+  };
+
   const createPretaskForLevel = (rootTask, level, parents)=>{
     if(!rootTask) return;
     const parentList = level===1 ? [rootTask] : (parents||[]);
@@ -1286,6 +1370,7 @@
 
   const renderPretaskCard = (rootTask, level, task, parents)=>{
     const card=el("div","pretask-card");
+    card.dataset.taskId = task.id;
     const isOpen = state.project.view.pretaskEditorId === task.id;
     if(isOpen) card.classList.add("open");
 
@@ -1309,8 +1394,16 @@
     let parentTask = null;
     if(level===1){
       parentTask = rootTask;
+      card.dataset.parentId = rootTask.id;
     }else{
       parentTask = (parents||[]).find(parent=>parent.id===task.structureParentId) || null;
+    }
+    if(level>1){
+      if(parentTask){
+        card.dataset.parentId = parentTask.id;
+      }else{
+        delete card.dataset.parentId;
+      }
     }
     const parentLabel = parentTask ? labelForTask(parentTask) : "Sin vincular";
     linkRow.appendChild(el("span","pretask-arrow-label",parentLabel));
@@ -1353,6 +1446,8 @@
   const renderPretaskArea = (task)=>{
     const area=el("div","nexo-area nexo-top");
     area.dataset.relation="pre";
+    area.dataset.taskId = task.id;
+    ensurePretaskResizeListener();
     const head=el("div","nexo-head");
     head.appendChild(el("h4",null,"Pretareas"));
     area.appendChild(head);
@@ -1366,6 +1461,7 @@
     grid.appendChild(renderPretaskRow(task,2,level2,level1));
     grid.appendChild(renderPretaskRow(task,1,level1,[task]));
     area.appendChild(grid);
+    schedulePretaskLinkRedraw();
     return area;
   };
 
