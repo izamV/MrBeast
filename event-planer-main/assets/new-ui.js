@@ -1297,15 +1297,16 @@
         decrementBtn.onclick=()=>{ adjustQty(-1); };
         incrementBtn.onclick=()=>{ adjustQty(1); };
 
-        const actions=el("div","material-actions");
-        const removeBtn=el("button","btn danger small","Quitar");
+        const removeBtn=el("button","material-remove-btn","×");
+        removeBtn.type="button";
+        removeBtn.title="Quitar material";
+        removeBtn.setAttribute("aria-label","Quitar material");
         removeBtn.onclick=()=>{
           task.materiales.splice(idx,1);
           touchTask(task);
           renderClient();
         };
-        actions.appendChild(removeBtn);
-        row.appendChild(actions);
+        row.appendChild(removeBtn);
 
         rows.appendChild(row);
       });
