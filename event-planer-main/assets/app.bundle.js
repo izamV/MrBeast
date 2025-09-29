@@ -31,8 +31,244 @@
   if(!root.state){
     root.state = {
       project:{ nombre:"Proyecto", fecha:"", tz:"Europe/Madrid", updatedAt:"", view:{ lastTab:"CLIENTE", subGantt:"Gantt", selectedIndex:{} } },
-      locations:[], taskTypes:[], materialTypes:[], vehicles:[], staff:[],
-      sessions:{ CLIENTE:[] }, horaInicial:{}, localizacionInicial:{}
+      locations:[
+        { id:"L_STAGE", nombre:"Escenario principal", lat:"41.3870", lng:"2.1701" },
+        { id:"L_STORAGE", nombre:"Almacén central", lat:"41.3865", lng:"2.1698" },
+        { id:"L_GREEN", nombre:"Sala verde", lat:"41.3872", lng:"2.1705" },
+        { id:"L_HALL", nombre:"Hall invitados", lat:"41.3869", lng:"2.1700" }
+      ],
+      taskTypes:[
+        { id:"T_MAIN_EVENT", nombre:"Evento principal", color:"#2563eb", locked:false },
+        { id:"T_PREPARATION", nombre:"Preparación", color:"#a855f7", locked:false },
+        { id:"T_PARALLEL_SUPPORT", nombre:"Soporte paralelo", color:"#14b8a6", locked:false },
+        { id:"T_POST_EVENT", nombre:"Post evento", color:"#f97316", locked:false }
+      ],
+      materialTypes:[
+        { id:"MT_AUDIO", nombre:"Audio" },
+        { id:"MT_LIGHTS", nombre:"Iluminación" },
+        { id:"MT_CATERING", nombre:"Catering" }
+      ],
+      vehicles:[],
+      staff:[
+        { id:"ST_STAGE", nombre:"Equipo escenario", rol:"STAFF" },
+        { id:"ST_CATERING", nombre:"Equipo catering", rol:"STAFF" }
+      ],
+      sessions:{
+        CLIENTE:[
+          {
+            id:"TASK_MAIN_SHOW",
+            structureRelation:"milestone",
+            actionName:"Show principal",
+            taskTypeId:"T_MAIN_EVENT",
+            startMin:600,
+            endMin:720,
+            durationMin:120,
+            locationId:"L_STAGE",
+            materiales:[
+              { materialTypeId:"MT_AUDIO", cantidad:4 },
+              { materialTypeId:"MT_LIGHTS", cantidad:20 }
+            ],
+            assignedStaffIds:["ST_STAGE"],
+            locked:true
+          },
+          {
+            id:"TASK_PRE_RECEIVE",
+            structureParentId:"TASK_MAIN_SHOW",
+            structureRelation:"pre",
+            actionName:"Recepción de materiales",
+            taskTypeId:"TASK_MONTAGE",
+            durationMin:60,
+            limitEarlyMin:60,
+            limitLateMin:540,
+            limitEarlyMinEnabled:true,
+            limitLateMinEnabled:true,
+            locationId:"L_STORAGE",
+            materiales:[],
+            assignedStaffIds:["ST_STAGE"]
+          },
+          {
+            id:"TASK_PRE_SETUP",
+            structureParentId:"TASK_PRE_RECEIVE",
+            structureRelation:"pre",
+            actionName:"Montaje de estructura",
+            taskTypeId:"TASK_MONTAGE",
+            durationMin:45,
+            limitEarlyMinEnabled:false,
+            limitLateMinEnabled:false,
+            locationId:"L_STAGE",
+            materiales:[],
+            assignedStaffIds:["ST_STAGE"]
+          },
+          {
+            id:"TASK_PRE_TEST",
+            structureParentId:"TASK_PRE_SETUP",
+            structureRelation:"pre",
+            actionName:"Pruebas de sonido",
+            taskTypeId:"TASK_MONTAGE",
+            durationMin:30,
+            limitEarlyMinEnabled:false,
+            limitLateMinEnabled:false,
+            locationId:"L_STAGE",
+            materiales:[{ materialTypeId:"MT_AUDIO", cantidad:2 }],
+            assignedStaffIds:["ST_STAGE"]
+          },
+          {
+            id:"TASK_PARALLEL_STREAM",
+            structureParentId:"TASK_MAIN_SHOW",
+            structureRelation:"parallel",
+            actionName:"Cobertura en directo",
+            taskTypeId:"T_PARALLEL_SUPPORT",
+            durationMin:90,
+            limitEarlyMin:600,
+            limitEarlyMinEnabled:true,
+            limitLateMinEnabled:false,
+            locationId:"L_GREEN",
+            materiales:[],
+            assignedStaffIds:["ST_STAGE"]
+          },
+          {
+            id:"TASK_PARALLEL_VIP",
+            structureParentId:"TASK_MAIN_SHOW",
+            structureRelation:"parallel",
+            actionName:"Atención invitados VIP",
+            taskTypeId:"T_PARALLEL_SUPPORT",
+            durationMin:120,
+            limitEarlyMin:600,
+            limitLateMin:780,
+            limitEarlyMinEnabled:true,
+            limitLateMinEnabled:true,
+            locationId:"L_HALL",
+            materiales:[{ materialTypeId:"MT_CATERING", cantidad:30 }],
+            assignedStaffIds:["ST_CATERING"]
+          },
+          {
+            id:"TASK_POST_CLEAR",
+            structureParentId:"TASK_MAIN_SHOW",
+            structureRelation:"post",
+            actionName:"Desmontaje y limpieza",
+            taskTypeId:"TASK_DESMONT",
+            durationMin:45,
+            limitEarlyMin:720,
+            limitLateMin:900,
+            limitEarlyMinEnabled:true,
+            limitLateMinEnabled:true,
+            locationId:"L_STAGE",
+            materiales:[],
+            assignedStaffIds:["ST_STAGE"]
+          },
+          {
+            id:"TASK_POST_REPORT",
+            structureParentId:"TASK_POST_CLEAR",
+            structureRelation:"post",
+            actionName:"Informe final",
+            taskTypeId:"T_POST_EVENT",
+            durationMin:30,
+            limitEarlyMinEnabled:false,
+            limitLateMinEnabled:false,
+            locationId:"L_GREEN",
+            materiales:[],
+            assignedStaffIds:["ST_STAGE"]
+          },
+          {
+            id:"TASK_MAIN_DINNER",
+            structureRelation:"milestone",
+            actionName:"Cena VIP",
+            taskTypeId:"T_MAIN_EVENT",
+            startMin:900,
+            endMin:1050,
+            durationMin:150,
+            locationId:"L_HALL",
+            materiales:[{ materialTypeId:"MT_CATERING", cantidad:50 }],
+            assignedStaffIds:["ST_CATERING"],
+            locked:true
+          },
+          {
+            id:"TASK_PRE_MENU",
+            structureParentId:"TASK_MAIN_DINNER",
+            structureRelation:"pre",
+            actionName:"Preparación del menú",
+            taskTypeId:"TASK_MONTAGE",
+            durationMin:90,
+            limitEarlyMin:60,
+            limitLateMin:810,
+            limitEarlyMinEnabled:true,
+            limitLateMinEnabled:true,
+            locationId:"L_GREEN",
+            materiales:[{ materialTypeId:"MT_CATERING", cantidad:20 }],
+            assignedStaffIds:["ST_CATERING"]
+          },
+          {
+            id:"TASK_PRE_BRIEFING",
+            structureParentId:"TASK_PRE_MENU",
+            structureRelation:"pre",
+            actionName:"Briefing de sala",
+            taskTypeId:"TASK_MONTAGE",
+            durationMin:30,
+            limitEarlyMinEnabled:false,
+            limitLateMinEnabled:false,
+            locationId:"L_HALL",
+            materiales:[],
+            assignedStaffIds:["ST_CATERING"]
+          },
+          {
+            id:"TASK_PRE_DECOR",
+            structureParentId:"TASK_PRE_BRIEFING",
+            structureRelation:"pre",
+            actionName:"Decoración final",
+            taskTypeId:"TASK_MONTAGE",
+            durationMin:45,
+            limitEarlyMinEnabled:false,
+            limitLateMinEnabled:false,
+            locationId:"L_HALL",
+            materiales:[],
+            assignedStaffIds:["ST_CATERING"]
+          },
+          {
+            id:"TASK_PARALLEL_MEDIA",
+            structureParentId:"TASK_MAIN_DINNER",
+            structureRelation:"parallel",
+            actionName:"Cobertura fotográfica",
+            taskTypeId:"T_PARALLEL_SUPPORT",
+            durationMin:120,
+            limitEarlyMin:900,
+            limitEarlyMinEnabled:true,
+            limitLateMinEnabled:false,
+            locationId:"L_HALL",
+            materiales:[],
+            assignedStaffIds:["ST_STAGE"]
+          },
+          {
+            id:"TASK_POST_TAKEDOWN",
+            structureParentId:"TASK_MAIN_DINNER",
+            structureRelation:"post",
+            actionName:"Recogida del montaje",
+            taskTypeId:"TASK_DESMONT",
+            durationMin:60,
+            limitEarlyMin:1050,
+            limitLateMin:1200,
+            limitEarlyMinEnabled:true,
+            limitLateMinEnabled:true,
+            locationId:"L_HALL",
+            materiales:[],
+            assignedStaffIds:["ST_STAGE"]
+          },
+          {
+            id:"TASK_POST_PAYMENT",
+            structureParentId:"TASK_POST_TAKEDOWN",
+            structureRelation:"post",
+            actionName:"Cierre con proveedores",
+            taskTypeId:"T_POST_EVENT",
+            durationMin:30,
+            limitEarlyMinEnabled:false,
+            limitLateMinEnabled:false,
+            locationId:"L_STORAGE",
+            materiales:[],
+            assignedStaffIds:["ST_CATERING"]
+          }
+        ]
+      },
+      horaInicial:{ CLIENTE:540 },
+      localizacionInicial:{ CLIENTE:"L_STAGE" }
     };
   }
   // Autosave
