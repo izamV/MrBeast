@@ -244,11 +244,31 @@
     notifyScheduleSubscribers();
   };
 
-  const defaultTimelineStart = ()=> state.horaInicial?.CLIENTE ?? 9*60;
-
   const PRETASK_DEFAULT_DURATION = 30;
   const DAY_MAX_MIN = 23*60 + 55;
   const roundToFive = (mins)=> Math.round(Math.max(0, Math.min(DAY_MAX_MIN, Number(mins)||0))/5)*5;
+  const clampMinuteValue = (value)=> Math.max(0, Math.min(DAY_MAX_MIN, value));
+  const parseStoredMinute = (value)=>{
+    if(Number.isFinite(value)) return clampMinuteValue(Math.round(Number(value)));
+    if(typeof value === "string"){
+      const trimmed=value.trim();
+      if(!trimmed) return null;
+      const match=trimmed.match(/^(\d{1,2}):(\d{2})$/);
+      if(match){
+        const hours=parseInt(match[1],10)||0;
+        const minutes=parseInt(match[2],10)||0;
+        return clampMinuteValue(hours*60+minutes);
+      }
+      const numeric=Number(trimmed);
+      if(Number.isFinite(numeric)) return clampMinuteValue(Math.round(numeric));
+    }
+    return null;
+  };
+  const getInitialMinuteFor = (pid)=> parseStoredMinute(state.horaInicial?.[pid]);
+  const defaultTimelineStart = ()=>{
+    const start=getInitialMinuteFor("CLIENTE");
+    return start!=null ? roundToFive(start) : 9*60;
+  };
   const clampToDay = (mins)=> Math.max(0, Math.min(DAY_MAX_MIN, Number(mins)||0));
   const formatTimeForInput = (mins)=>{
     if(!Number.isFinite(mins)) return "";
@@ -553,7 +573,7 @@
       materiales: [],
       comentario: "",
       assignedStaffIds: [],
-      startMin: parentId?null:(state.horaInicial?.CLIENTE ?? 9*60),
+      startMin: parentId?null:(getInitialMinuteFor("CLIENTE") ?? 9*60),
       endMin: null,
       actionType: ACTION_TYPE_NORMAL
     };
@@ -676,7 +696,7 @@
     return editorId;
   };
 
-  const hasInitialTime = ()=> state.horaInicial?.CLIENTE != null;
+  const hasInitialTime = ()=> getInitialMinuteFor("CLIENTE") != null;
   const hasInitialLocation = ()=>{
     const loc=state.localizacionInicial?.CLIENTE;
     return !(loc==null || loc==="");
@@ -691,10 +711,11 @@
     }
     const task=createTask({ relation:"milestone" });
     if(isFirst){
-      const start=state.horaInicial?.CLIENTE;
+      const start=getInitialMinuteFor("CLIENTE");
       if(start!=null){
-        task.startMin=start;
-        task.endMin=start + Math.max(5, Number(task.durationMin)||60);
+        const normalized=roundToFive(start);
+        task.startMin=normalized;
+        task.endMin=normalized + Math.max(5, Number(task.durationMin)||60);
       }
       task.locationId = state.localizacionInicial?.CLIENTE || null;
     }
@@ -725,7 +746,7 @@
     timeField.appendChild(el("label",null,"Hora inicial"));
     const timeInput=el("input","input");
     timeInput.type="time";
-    timeInput.value=formatTimeValue(state.horaInicial?.CLIENTE);
+    timeInput.value=formatTimeValue(getInitialMinuteFor("CLIENTE"));
     timeInput.onchange=()=>{
       const v=parseTimeInput(timeInput.value);
       if(v==null){

@@ -3,6 +3,24 @@
   const root = window;
   if(typeof root.ACTION_TYPE_TRANSPORT === "undefined") root.ACTION_TYPE_TRANSPORT = "TRANSPORTE";
   if(typeof root.ACTION_TYPE_NORMAL === "undefined") root.ACTION_TYPE_NORMAL = "NORMAL";
+  const DAY_MAX_MIN = 23*60 + 55;
+  const clampMinuteValue = (value)=> Math.max(0, Math.min(DAY_MAX_MIN, value));
+  const parseMinuteValue = (value)=>{
+    if(Number.isFinite(value)) return clampMinuteValue(Math.round(Number(value)));
+    if(typeof value === "string"){
+      const trimmed=value.trim();
+      if(!trimmed) return null;
+      const hhmm=trimmed.match(/^(\d{1,2}):(\d{2})$/);
+      if(hhmm){
+        const hours=parseInt(hhmm[1],10)||0;
+        const minutes=parseInt(hhmm[2],10)||0;
+        return clampMinuteValue(hours*60+minutes);
+      }
+      const numeric=Number(trimmed);
+      if(Number.isFinite(numeric)) return clampMinuteValue(Math.round(numeric));
+    }
+    return null;
+  };
   // Estado básico
   if(!root.state){
     root.state = {
@@ -42,6 +60,11 @@
     });
     st.vehicles=st.vehicles||[]; st.staff=st.staff||[]; st.sessions=st.sessions||{CLIENTE:[]};
     st.horaInicial=st.horaInicial||{}; st.localizacionInicial=st.localizacionInicial||{};
+    Object.keys(st.horaInicial).forEach(pid=>{
+      const parsed=parseMinuteValue(st.horaInicial[pid]);
+      if(parsed==null) delete st.horaInicial[pid];
+      else st.horaInicial[pid]=parsed;
+    });
     st.scheduleMeta=st.scheduleMeta||{};
     if(typeof st.scheduleMeta.generatedAt==="undefined") st.scheduleMeta.generatedAt=null;
     st.scheduleMeta.warningsByStaff=st.scheduleMeta.warningsByStaff||{};
