@@ -3390,7 +3390,7 @@
     return buildScheduleForStaff(staffId, previewItems);
   };
 
-  const scorePreviewResult = (preview, staffId, staffOrder)=>{
+  const scorePreviewResult = (preview, staffId, staffOrder, preferenceIndex)=>{
     const sessions=preview?.sessions||[];
     const stats=preview?.stats||{};
     const warnings=preview?.warnings||[];
@@ -3404,6 +3404,7 @@
     const totalMinutes = Number(stats.totalMinutes)||0;
     const sessionCount = Number(stats.sessionCount)||0;
     const orderIndex = staffOrder.get(staffId) ?? Number.MAX_SAFE_INTEGER;
+    const preferencePenalty = preferenceIndex?.get(staffId) ?? Number.MAX_SAFE_INTEGER;
     return [
       hasSessionPenalty,
       windowViolations,
@@ -3413,16 +3414,17 @@
       startScore,
       totalMinutes,
       sessionCount,
+      preferencePenalty,
       orderIndex
     ];
   };
 
-  const pickBestStaffForInfo = (info, candidateIds, itemsByStaff, staffOrder)=>{
+  const pickBestStaffForInfo = (info, candidateIds, itemsByStaff, staffOrder, preferenceIndex)=>{
     let bestId=null;
     let bestScore=null;
     candidateIds.forEach(staffId=>{
       const preview=previewScheduleWithInfo(staffId, info, itemsByStaff);
-      const score=scorePreviewResult(preview, staffId, staffOrder);
+      const score=scorePreviewResult(preview, staffId, staffOrder, preferenceIndex);
       if(!bestScore || compareScoreTuples(score, bestScore)<0){
         bestScore=score;
         bestId=staffId;
@@ -3536,20 +3538,28 @@
         return;
       }
 
-      let candidates=(preferredAssignments.get(task.id)||[]).filter(id=>itemsByStaff.has(id));
-      if(!candidates.length){
-        candidates=(assignmentMap.get(task.id)||[]).filter(id=>itemsByStaff.has(id));
-      }
-      if(!candidates.length){
-        candidates=staffIds.filter(id=>itemsByStaff.has(id));
-      }
-      candidates=[...new Set(candidates)];
+      const candidatePreference=new Map();
+      const candidateSet=new Set();
+      const appendCandidates=(ids, penalty)=>{
+        (ids||[]).forEach(id=>{
+          if(!itemsByStaff.has(id)) return;
+          if(!candidateSet.has(id)){
+            candidateSet.add(id);
+            candidatePreference.set(id, penalty);
+          }else{
+            const current=candidatePreference.get(id);
+            if(current>penalty) candidatePreference.set(id, penalty);
+          }
+        });
+      };
+      appendCandidates(preferredAssignments.get(task.id)||[], 0);
+      appendCandidates(assignmentMap.get(task.id)||[], 1);
+      appendCandidates(staffIds, 2);
+      const candidates=[...candidateSet];
 
       let chosen=null;
-      if(candidates.length===1){
-        chosen=candidates[0];
-      }else if(candidates.length){
-        chosen=pickBestStaffForInfo(info, candidates, itemsByStaff, staffOrder) || candidates[0];
+      if(candidates.length){
+        chosen=pickBestStaffForInfo(info, candidates, itemsByStaff, staffOrder, candidatePreference) || candidates[0];
       }
 
       if(chosen){
