@@ -241,6 +241,7 @@
     }
     syncStaffSessions();
     touch();
+    notifyScheduleSubscribers();
   };
 
   const defaultTimelineStart = ()=> state.horaInicial?.CLIENTE ?? 9*60;
@@ -2979,6 +2980,569 @@
       clientTargets.add(catalogTarget);
     }
     window.renderClient();
+  };
+
+  const scheduleTargets = new Set();
+  let scheduleSequence = 0;
+  const TRANSPORT_GAP_MINUTES = 5;
+
+  function notifyScheduleSubscribers(){
+    if(typeof window.updateScheduleCatalogButton === "function") window.updateScheduleCatalogButton();
+    if(typeof window.updateScheduleCatalogViews === "function") window.updateScheduleCatalogViews();
+  }
+
+  const ensureScheduleMeta = ()=>{
+    state.scheduleMeta = state.scheduleMeta || {};
+    if(typeof state.scheduleMeta.generatedAt === "undefined") state.scheduleMeta.generatedAt = null;
+    state.scheduleMeta.warningsByStaff = state.scheduleMeta.warningsByStaff || {};
+    state.scheduleMeta.globalWarnings = state.scheduleMeta.globalWarnings || [];
+    if(typeof state.scheduleMeta.activeStaffId === "undefined") state.scheduleMeta.activeStaffId = null;
+  };
+
+  const normalizeMinute = (value)=>{
+    if(!Number.isFinite(value)) return null;
+    return roundToFive(Math.max(0, Math.min(DAY_MAX_MIN, Number(value)||0)));
+  };
+
+  window.isScheduleCatalogAvailable = ()=>{
+    const tasks=getTaskList();
+    if(!tasks.length) return false;
+    return tasks.every(isTaskLocked);
+  };
+
+  const sanitizeAssignments = (tasks, staffList)=>{
+    const staffIds=(staffList||[]).map(st=>st.id);
+    const staffSet=new Set(staffIds);
+    const assignmentMap=new Map();
+    const missing=[];
+    const seenMissing=new Set();
+    const warningSet=new Set();
+    const fallback=staffIds[0]||null;
+
+    tasks.forEach(task=>{
+      const valid=(task.assignedStaffIds||[]).filter(id=>staffSet.has(id));
+      assignmentMap.set(task.id, valid.slice());
+    });
+
+    const roots=tasks.filter(task=>!task.structureParentId);
+    roots.forEach(rootTask=>{
+      let assigned=(assignmentMap.get(rootTask.id)||[]).slice();
+      if(!assigned.length && fallback){
+        assigned=[fallback];
+      }
+      if(!assigned.length){
+        if(!seenMissing.has(rootTask.id)) missing.push(rootTask);
+        seenMissing.add(rootTask.id);
+        warningSet.add(`${labelForTask(rootTask)}: sin staff disponible.`);
+      }
+      assignmentMap.set(rootTask.id, assigned.slice());
+    });
+
+    tasks.forEach(task=>{
+      if(task.structureRelation === "milestone") return;
+      let assigned=(assignmentMap.get(task.id)||[]).slice();
+      if(!assigned.length){
+        const root = rootTaskFor(task);
+        const rootAssigned = root ? (assignmentMap.get(root.id)||[]) : [];
+        if(rootAssigned.length){
+          assigned=[rootAssigned[0]];
+        }else if(fallback){
+          assigned=[fallback];
+        }
+      }
+      if(!assigned.length){
+        if(!seenMissing.has(task.id)) missing.push(task);
+        seenMissing.add(task.id);
+        warningSet.add(`${labelForTask(task)}: sin staff disponible.`);
+      }
+      assignmentMap.set(task.id, assigned.slice());
+    });
+
+    return { assignmentMap, missingAssignments:missing, globalWarnings:[...warningSet] };
+  };
+
+  const computeEarliestForTask = (task, rootTask, duration)=>{
+    if(task.limitEarlyMinEnabled && Number.isFinite(task.limitEarlyMin)){
+      return Math.max(0, task.limitEarlyMin);
+    }
+    if(task.structureRelation === "pre"){
+      if(Number.isFinite(rootTask?.startMin)){
+        return Math.max(0, rootTask.startMin - duration);
+      }
+      return 0;
+    }
+    if(task.structureRelation === "parallel"){
+      if(Number.isFinite(rootTask?.startMin)) return rootTask.startMin;
+      return defaultTimelineStart();
+    }
+    if(task.structureRelation === "post"){
+      if(Number.isFinite(rootTask?.endMin)) return rootTask.endMin;
+      if(Number.isFinite(rootTask?.startMin) && Number.isFinite(rootTask?.durationMin)){
+        const rootEnd = rootTask.startMin + Math.max(5, Number(rootTask.durationMin)||duration);
+        return rootEnd;
+      }
+      return defaultTimelineStart();
+    }
+    if(Number.isFinite(task.startMin)) return task.startMin;
+    return defaultTimelineStart();
+  };
+
+  const computeLatestForTask = (task, rootTask, duration, earliest)=>{
+    const base=Math.max(0, earliest??0);
+    if(task.limitLateMinEnabled && Number.isFinite(task.limitLateMin)){
+      return Math.max(base, task.limitLateMin);
+    }
+    if(task.structureRelation === "pre"){
+      if(Number.isFinite(rootTask?.startMin)){
+        return Math.max(base, rootTask.startMin - Math.max(5, duration));
+      }
+      return base;
+    }
+    if(task.structureRelation === "parallel"){
+      if(Number.isFinite(rootTask?.endMin)){
+        return Math.max(base, rootTask.endMin - duration);
+      }
+      if(Number.isFinite(rootTask?.startMin)) return Math.max(base, rootTask.startMin);
+      return base;
+    }
+    if(task.structureRelation === "post"){
+      if(Number.isFinite(rootTask?.endMin)) return Math.max(base, rootTask.endMin);
+      return base;
+    }
+    return Number.isFinite(task.startMin) ? task.startMin : base;
+  };
+
+  const computeLatestEndForTask = (task, info, rootTask)=>{
+    if(task.limitLateMinEnabled && Number.isFinite(task.limitLateMin)){
+      if(task.structureRelation === "post"){
+        return normalizeMinute(task.limitLateMin);
+      }
+      return normalizeMinute(task.limitLateMin + info.duration);
+    }
+    if(task.structureRelation === "post" && Number.isFinite(rootTask?.endMin)){
+      return normalizeMinute(rootTask.endMin + info.duration);
+    }
+    if(info.fixedStart && info.endMin!=null) return info.endMin;
+    return null;
+  };
+
+  const nextScheduleSessionId = ()=>{
+    scheduleSequence+=1;
+    return `SCH_${Date.now().toString(36)}${scheduleSequence.toString(36)}`;
+  };
+
+  const cloneMaterialsForSession = (task)=> (task.materiales||[]).map(mat=>({
+    materialTypeId: mat?.materialTypeId || null,
+    cantidad: Math.max(0, Number(mat?.cantidad)||0)
+  }));
+
+  const makeTaskSession = (task, start, end)=>{
+    const session={
+      id:nextScheduleSessionId(),
+      startMin:start,
+      endMin:end,
+      taskTypeId:task.taskTypeId||null,
+      actionType: task.actionType===ACTION_TYPE_TRANSPORT?ACTION_TYPE_TRANSPORT:ACTION_TYPE_NORMAL,
+      actionName: labelForTask(task),
+      locationId: task.locationApplies===false ? null : (task.locationId||null),
+      vehicleId:null,
+      materiales:cloneMaterialsForSession(task),
+      comentario: task.comentario||"",
+      prevId:null,
+      nextId:null,
+      inheritFromId: task.id||null
+    };
+    if(session.actionType===ACTION_TYPE_TRANSPORT && !session.taskTypeId){
+      session.taskTypeId = TASK_TRANSP;
+      session.vehicleId = defaultVehicleId();
+    }
+    return session;
+  };
+
+  const makeTransportSession = (originId, destinationId, start, end)=>{
+    const sStart = normalizeMinute(start);
+    const sEnd = normalizeMinute(end);
+    if(sStart==null || sEnd==null || sEnd<=sStart) return null;
+    const session={
+      id:nextScheduleSessionId(),
+      startMin:sStart,
+      endMin:sEnd,
+      taskTypeId:TASK_TRANSP,
+      actionType:ACTION_TYPE_TRANSPORT,
+      actionName:"Transporte",
+      locationId: destinationId || originId || null,
+      vehicleId: defaultVehicleId(),
+      materiales:[],
+      comentario:"",
+      prevId:null,
+      nextId:null,
+      inheritFromId:null
+    };
+    const originName = originId ? (locationNameById(originId)||"") : "";
+    const destName = destinationId ? (locationNameById(destinationId)||"") : "";
+    if(originName || destName){
+      session.comentario = `${originName || "Sin origen"} → ${destName || "Sin destino"}`;
+    }
+    return session;
+  };
+
+  const computeScheduleInfo = (task, rootTask, orderMap)=>{
+    const computeDuration = ()=>{
+      const rawDuration = Number(task.durationMin);
+      if(Number.isFinite(rawDuration)) return Math.max(5, Math.round(rawDuration));
+      const rawStart = Number(task.startMin);
+      const rawEnd = Number(task.endMin);
+      if(Number.isFinite(rawStart) && Number.isFinite(rawEnd)){
+        return Math.max(5, Math.round(rawEnd - rawStart));
+      }
+      return 60;
+    };
+    const baseDuration = computeDuration();
+    const normalizedDuration = normalizeMinute(baseDuration);
+    const info={
+      task,
+      label:labelForTask(task),
+      relation:task.structureRelation||"milestone",
+      duration: normalizedDuration ?? baseDuration,
+      order:orderMap.get(task.id)||0,
+      locationId: task.locationApplies===false ? null : (task.locationId||null),
+      locationRequired: task.locationApplies!==false,
+      startMin: Number.isFinite(task.startMin)?normalizeMinute(task.startMin):null,
+      endMin: Number.isFinite(task.endMin)?normalizeMinute(task.endMin):null,
+      fixedStart:false,
+      earliest:null,
+      latest:null,
+      latestEnd:null,
+      sortKey:null
+    };
+    if(info.startMin!=null){
+      info.fixedStart=true;
+      info.earliest=info.startMin;
+      info.latest=info.startMin;
+    }else{
+      const earliestRaw=computeEarliestForTask(task, rootTask, info.duration);
+      const latestRaw=computeLatestForTask(task, rootTask, info.duration, earliestRaw);
+      info.earliest=normalizeMinute(earliestRaw);
+      info.latest=normalizeMinute(latestRaw);
+      if(info.earliest!=null && info.latest!=null && info.latest<info.earliest){
+        info.latest=info.earliest;
+      }
+    }
+    if(info.fixedStart && info.endMin==null){
+      info.endMin = normalizeMinute((info.startMin||0)+info.duration);
+    }
+    info.latestEnd = computeLatestEndForTask(task, info, rootTask);
+    info.sortKey = info.fixedStart ? (info.startMin ?? Infinity) : (info.earliest ?? Infinity);
+    return info;
+  };
+
+  const buildScheduleForStaff = (staffId, items)=>{
+    const warnings=[];
+    const sessions=[];
+    if(!items.length) return {sessions, warnings};
+    items.sort((a,b)=>{
+      const sk=(a.sortKey??Infinity)-(b.sortKey??Infinity);
+      if(sk!==0) return sk;
+      const rel=(RELATION_ORDER[a.relation]||0)-(RELATION_ORDER[b.relation]||0);
+      if(rel!==0) return rel;
+      const ord=(a.order||0)-(b.order||0);
+      if(ord!==0) return ord;
+      return a.label.localeCompare(b.label);
+    });
+    let currentTime=null;
+    let lastLocation=null;
+    items.forEach(info=>{
+      const task=info.task;
+      const label=info.label;
+      const duration=Math.max(5, Number(info.duration)||5);
+      if(info.locationRequired && !info.locationId){
+        warnings.push(`${label}: falta localización.`);
+      }
+      let earliest = info.fixedStart ? (info.startMin ?? info.earliest ?? 0) : (info.earliest ?? 0);
+      if(!Number.isFinite(earliest)) earliest = 0;
+      earliest = normalizeMinute(earliest) ?? 0;
+      if(currentTime==null) currentTime = earliest;
+      let plannedStart = info.fixedStart ? (info.startMin ?? earliest) : Math.max(earliest, currentTime);
+      if(info.fixedStart && info.startMin!=null && currentTime>info.startMin){
+        warnings.push(`${label}: inicio fijo ${toHHMM(info.startMin)} solapa con tareas previas.`);
+        plannedStart = currentTime;
+      }
+
+      if(lastLocation && info.locationId && info.locationId!==lastLocation && task.actionType!==ACTION_TYPE_TRANSPORT){
+        const travelStart = Math.max(currentTime, plannedStart - TRANSPORT_GAP_MINUTES);
+        const travelEnd = travelStart + TRANSPORT_GAP_MINUTES;
+        const transport=makeTransportSession(lastLocation, info.locationId, travelStart, travelEnd);
+        if(transport){
+          sessions.push(transport);
+          currentTime = transport.endMin;
+          plannedStart = Math.max(plannedStart, transport.endMin);
+        }
+        if(info.fixedStart && info.startMin!=null && plannedStart>info.startMin){
+          warnings.push(`${label}: el transporte retrasa el inicio fijado (${toHHMM(info.startMin)}).`);
+        }
+      }
+
+      const latest = info.fixedStart ? info.startMin : info.latest;
+      if(!info.fixedStart){
+        plannedStart = Math.max(plannedStart, currentTime);
+        if(latest!=null && plannedStart>latest){
+          warnings.push(`${label}: inicio ${toHHMM(plannedStart)} fuera de la franja (máximo ${toHHMM(latest)}).`);
+        }
+      }
+
+      const start = normalizeMinute(plannedStart) ?? plannedStart;
+      const end = normalizeMinute(start + duration);
+      if(end<=start){
+        warnings.push(`${label}: duración incompatible tras los ajustes.`);
+        currentTime = end;
+        return;
+      }
+      if(info.latestEnd!=null && end>info.latestEnd){
+        warnings.push(`${label}: final ${toHHMM(end)} supera el límite (${toHHMM(info.latestEnd)}).`);
+      }
+      sessions.push(makeTaskSession(task, start, end));
+      currentTime = end;
+      if(info.locationId) lastLocation = info.locationId;
+    });
+    sessions.sort((a,b)=> (a.startMin||0)-(b.startMin||0));
+    return {sessions, warnings};
+  };
+
+  const generateSchedules = ()=>{
+    ensureScheduleMeta();
+    const tasks=getTaskList();
+    if(!tasks.length) return {ok:false,msg:"No hay tareas del cliente que planificar."};
+    if(!window.isScheduleCatalogAvailable()){
+      return {ok:false,msg:"Bloquea todas las tareas del cliente antes de generar los horarios."};
+    }
+    const staffList=(state.staff||[]);
+    if(!staffList.length) return {ok:false,msg:"Añade miembros del staff para generar los horarios."};
+
+    const { assignmentMap, missingAssignments, globalWarnings } = sanitizeAssignments(tasks, staffList);
+    if(missingAssignments.length){
+      return {ok:false,msg:"No hay staff disponible para todas las tareas."};
+    }
+
+    tasks.forEach(task=>{
+      const assigned=(assignmentMap.get(task.id)||[]).slice();
+      task.assignedStaffIds=assigned;
+    });
+
+    const orderMap=hierarchyOrder();
+    const itemsByStaff=new Map();
+    tasks.forEach(task=>{
+      const assigned=assignmentMap.get(task.id)||[];
+      const root=rootTaskFor(task);
+      assigned.forEach(staffId=>{
+        if(!itemsByStaff.has(staffId)) itemsByStaff.set(staffId, []);
+        itemsByStaff.get(staffId).push(computeScheduleInfo(task, root, orderMap));
+      });
+    });
+
+    const warningsByStaff={};
+    const sessionsByStaff={};
+    staffList.forEach(st=>{
+      const items=itemsByStaff.get(st.id)||[];
+      const result=buildScheduleForStaff(st.id, items);
+      sessionsByStaff[st.id]=result.sessions;
+      warningsByStaff[st.id]=result.warnings;
+    });
+
+    Object.entries(sessionsByStaff).forEach(([staffId,sessions])=>{
+      state.sessions[staffId]=sessions;
+      if(sessions.length){
+        state.horaInicial=state.horaInicial||{};
+        state.horaInicial[staffId]=sessions[0].startMin;
+        const firstLoc = sessions.find(s=>s.actionType!==ACTION_TYPE_TRANSPORT && s.locationId)?.locationId
+          || sessions.find(s=>s.locationId)?.locationId
+          || null;
+        state.localizacionInicial=state.localizacionInicial||{};
+        state.localizacionInicial[staffId]=firstLoc;
+      }
+    });
+    Object.keys(state.sessions).forEach(pid=>{
+      if(pid!=="CLIENTE" && !(staffList.some(st=>st.id===pid))){
+        delete state.sessions[pid];
+      }
+    });
+
+    if(typeof window.ensureLinkFields === "function") window.ensureLinkFields();
+    if(typeof window.recomputeLocations === "function"){
+      staffList.forEach(st=> window.recomputeLocations(st.id));
+    }
+
+    state.scheduleMeta.generatedAt = new Date().toISOString();
+    state.scheduleMeta.warningsByStaff = warningsByStaff;
+    state.scheduleMeta.globalWarnings = globalWarnings;
+    Object.keys(state.scheduleMeta.warningsByStaff).forEach(id=>{
+      if(!staffList.some(st=>st.id===id)) delete state.scheduleMeta.warningsByStaff[id];
+    });
+
+    touch();
+    if(typeof window.renderClient === "function") window.renderClient();
+    notifyScheduleSubscribers();
+    return {ok:true,warningsByStaff,globalWarnings};
+  };
+
+  const formatScheduleTimestamp = (iso)=>{
+    if(!iso) return "Nunca";
+    try{
+      const d=new Date(iso);
+      return d.toLocaleString();
+    }catch(e){
+      return String(iso);
+    }
+  };
+
+  const renderScheduleCatalogInto = (container)=>{
+    ensureScheduleMeta();
+    if(!container) return;
+    container.innerHTML="";
+    const controls=el("div","schedule-controls");
+    const btn=el("button","btn", state.scheduleMeta.generatedAt?"Regenerar horarios":"Generar horarios");
+    const available=window.isScheduleCatalogAvailable();
+    btn.type="button";
+    btn.onclick=()=>{
+      const res=generateSchedules();
+      if(res.ok){
+        if(typeof flashStatus === "function") flashStatus("Horarios generados correctamente.");
+      }else if(typeof flashStatus === "function"){
+        flashStatus(res.msg||"No se pudieron generar los horarios.");
+      }
+      renderScheduleCatalogInto(container);
+    };
+    if(!available){
+      btn.disabled=true;
+      btn.title="Bloquea todas las tareas del cliente para generar los horarios.";
+    }
+    controls.appendChild(btn);
+    if(state.scheduleMeta.generatedAt){
+      controls.appendChild(el("span","mini",`Última generación: ${formatScheduleTimestamp(state.scheduleMeta.generatedAt)}`));
+    }
+    container.appendChild(controls);
+
+    if(!available){
+      container.appendChild(el("div","mini warn-text","Bloquea todas las tareas del cliente desde el catálogo para poder generar los horarios del staff."));
+      return;
+    }
+
+    if(!(state.staff||[]).length){
+      container.appendChild(el("div","mini muted","Añade miembros del staff desde la barra lateral para poder generar los horarios."));
+      return;
+    }
+
+    const warningsStore=state.scheduleMeta.warningsByStaff||{};
+    const staffList=(state.staff||[]);
+    let removed=false;
+    Object.keys(warningsStore).forEach(id=>{
+      if(!staffList.some(st=>st.id===id)){
+        delete warningsStore[id];
+        removed=true;
+      }
+    });
+    if(removed) touch();
+
+    const globalWarnings=state.scheduleMeta.globalWarnings||[];
+    if(globalWarnings.length){
+      const warnList=el("ul","warn-text");
+      globalWarnings.forEach(msg=> warnList.appendChild(el("li",null,msg)));
+      container.appendChild(warnList);
+    }
+
+    let activeId=state.scheduleMeta.activeStaffId;
+    if(!activeId || !staffList.some(st=>st.id===activeId)){
+      const fallbackId=staffList[0]?.id||null;
+      if(state.scheduleMeta.activeStaffId!==fallbackId){
+        state.scheduleMeta.activeStaffId=fallbackId;
+        touch();
+      }
+      activeId=fallbackId;
+    }
+
+    const tabs=el("div","schedule-tabs");
+    staffList.forEach(st=>{
+      const tab=el("button","tab"+(st.id===activeId?" active":""), st.nombre||st.id);
+      tab.type="button";
+      tab.onclick=()=>{
+        if(state.scheduleMeta.activeStaffId===st.id) return;
+        state.scheduleMeta.activeStaffId=st.id;
+        touch();
+        renderScheduleCatalogInto(container);
+      };
+      tabs.appendChild(tab);
+    });
+    container.appendChild(tabs);
+
+    const body=el("div","schedule-body");
+    if(!activeId){
+      body.appendChild(el("div","mini muted","Selecciona un miembro del staff para ver su planificación."));
+    }else{
+      const sessions=(state.sessions?.[activeId]||[]).slice().sort((a,b)=> (a.startMin||0)-(b.startMin||0));
+      if(!sessions.length){
+        const msg = state.scheduleMeta.generatedAt
+          ? "No hay acciones asignadas a este miembro del staff."
+          : "Pulsa \"Generar horarios\" para crear la planificación.";
+        body.appendChild(el("div","mini muted",msg));
+      }else{
+        const table=el("table","schedule-table");
+        const thead=el("thead"); const trh=el("tr");
+        ["Inicio","Fin","Duración","Acción","Localización"].forEach(label=> trh.appendChild(el("th",null,label)));
+        thead.appendChild(trh); table.appendChild(thead);
+        const tbody=el("tbody");
+        sessions.forEach(session=>{
+          const row=el("tr");
+          row.appendChild(el("td",null, toHHMM(session.startMin||0)));
+          row.appendChild(el("td",null, toHHMM(session.endMin||session.startMin||0)));
+          const dur=(Number(session.endMin||0)-Number(session.startMin||0));
+          row.appendChild(el("td",null, dur>0?`${dur} min`:"-"));
+          row.appendChild(el("td",null, session.actionName||"Sin nombre"));
+          let loc="Sin localización";
+          if(session.actionType===ACTION_TYPE_TRANSPORT){
+            loc = session.locationId ? (locationNameById(session.locationId)||"En ruta") : "En ruta";
+          }else if(session.locationId){
+            loc = locationNameById(session.locationId)||"Sin localización";
+          }
+          row.appendChild(el("td",null, loc));
+          tbody.appendChild(row);
+        });
+        table.appendChild(tbody);
+        body.appendChild(table);
+      }
+      const staffWarnings=(state.scheduleMeta.warningsByStaff||{})[activeId]||[];
+      if(staffWarnings.length){
+        const warnTitle=el("div","mini warn-text","Conflictos en la planificación:");
+        const warnList=el("ul","warn-text");
+        staffWarnings.forEach(msg=> warnList.appendChild(el("li",null,msg)));
+        body.appendChild(warnTitle);
+        body.appendChild(warnList);
+      }
+    }
+    container.appendChild(body);
+  };
+
+  window.setScheduleCatalogTarget = (container)=>{
+    ensureScheduleMeta();
+    [...scheduleTargets].forEach(target=>{
+      if(!target || !target.isConnected || target===container){
+        scheduleTargets.delete(target);
+        if(target && target!==container) target.innerHTML="";
+      }
+    });
+    if(container){
+      scheduleTargets.add(container);
+      renderScheduleCatalogInto(container);
+    }
+  };
+
+  window.updateScheduleCatalogViews = ()=>{
+    ensureScheduleMeta();
+    [...scheduleTargets].forEach(target=>{
+      if(!target || !target.isConnected){
+        scheduleTargets.delete(target);
+        return;
+      }
+      renderScheduleCatalogInto(target);
+    });
   };
 
   const collectPersons = ()=>{

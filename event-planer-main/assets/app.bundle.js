@@ -66,6 +66,11 @@
     });
     st.vehicles=st.vehicles||[]; st.staff=st.staff||[]; st.sessions=st.sessions||{CLIENTE:[]};
     st.horaInicial=st.horaInicial||{}; st.localizacionInicial=st.localizacionInicial||{};
+    st.scheduleMeta=st.scheduleMeta||{};
+    if(typeof st.scheduleMeta.generatedAt==="undefined") st.scheduleMeta.generatedAt=null;
+    st.scheduleMeta.warningsByStaff=st.scheduleMeta.warningsByStaff||{};
+    st.scheduleMeta.globalWarnings=st.scheduleMeta.globalWarnings||[];
+    if(typeof st.scheduleMeta.activeStaffId==="undefined") st.scheduleMeta.activeStaffId=null;
     st.project=st.project||{nombre:"Proyecto",fecha:"",tz:"Europe/Madrid",updatedAt:"",view:{}}; st.project.view=st.project.view||{};
     st.project.view.lastTab=st.project.view.lastTab||"CLIENTE"; st.project.view.subGantt=st.project.view.subGantt||"Gantt"; st.project.view.selectedIndex=st.project.view.selectedIndex||{};
     if(!st.sessions.CLIENTE) st.sessions.CLIENTE=[];
@@ -1118,8 +1123,20 @@
         const del=el("button","btn danger","Eliminar"); del.onclick=()=>{ state.vehicles.splice(i,1); emitChanged(); openCatVeh(cont); };
         tr.appendChild(n); tr.appendChild(del); tb.appendChild(tr);
         lockMark(tr, !!v.locked);
-      });
+    });
     cont.appendChild(tbl);
+  };
+
+  window.openCatSchedule = (cont)=>{
+    cont.innerHTML="";
+    cont.appendChild(el("h3",null,"Catálogo: Horarios"));
+    const mount=el("div","schedule-catalog");
+    cont.appendChild(mount);
+    if(typeof window.setScheduleCatalogTarget === "function"){
+      window.setScheduleCatalogTarget(mount);
+    }else{
+      mount.appendChild(el("div","mini","La herramienta de horarios no está disponible."));
+    }
   };
 })();
 
@@ -1454,6 +1471,8 @@
       const del=el("button","del","X"); del.title="Eliminar"; del.onclick=()=>{ if((state.sessions?.[p.id]||[]).length){ alert("No se puede eliminar: tiene acciones."); return; } state.staff=state.staff.filter(x=>x.id!==p.id); touch(); personTabs(); renderClient(); renderStaffList(); };
       chip.appendChild(del); box.appendChild(chip);
     });
+    if(typeof window.updateScheduleCatalogButton === "function") window.updateScheduleCatalogButton();
+    if(typeof window.updateScheduleCatalogViews === "function") window.updateScheduleCatalogViews();
   };
 
   function openCatalog(which){
@@ -1461,11 +1480,26 @@
     const cont=document.getElementById("catalogView"); cont.innerHTML="";
     cont.appendChild(el("h3",null,"Catálogos"));
     if(typeof window.setCatalogClientTarget==="function"){ window.setCatalogClientTarget(null); }
+    if(typeof window.setScheduleCatalogTarget==="function" && which!=="sched"){ window.setScheduleCatalogTarget(null); }
     if(which==="loc") openCatLoc(cont);
     if(which==="task") openCatTask(cont);
     if(which==="mat") openCatMat(cont);
     if(which==="veh") openCatVeh(cont);
+    if(which==="sched") openCatSchedule(cont);
   }
+
+  function updateScheduleCatalogButton(){
+    const btn=document.getElementById("catSched");
+    if(!btn) return;
+    const available = typeof window.isScheduleCatalogAvailable === "function"
+      ? !!window.isScheduleCatalogAvailable()
+      : false;
+    btn.disabled = !available;
+    btn.title = available
+      ? ""
+      : "Bloquea todas las tareas del cliente para generar los horarios del staff.";
+  }
+  window.updateScheduleCatalogButton = updateScheduleCatalogButton;
 
   function renderResults(tab){
     showOnly("resultView");
@@ -1511,11 +1545,12 @@
     const addS=$id("addStaff"), newS=$id("newStaff");
     if(addS) addS.onclick=()=>{ const n=(newS?.value||"").trim(); if(!n) return; const id="P_"+(state.staff.length+1); state.staff.push({id,nombre:n,rol:"STAFF"}); if(newS) newS.value=""; touch(); personTabs(); renderClient(); renderStaffList(); };
 
-    const c1=$id("catLoc"), c2=$id("catTask"), c3=$id("catMat"), c4=$id("catVeh");
+    const c1=$id("catLoc"), c2=$id("catTask"), c3=$id("catMat"), c4=$id("catVeh"), c5=$id("catSched");
     if(c1) c1.onclick=()=>openCatalog("loc");
     if(c2) c2.onclick=()=>openCatalog("task");
     if(c3) c3.onclick=()=>openCatalog("mat");
     if(c4) c4.onclick=()=>openCatalog("veh");
+    if(c5) c5.onclick=()=>openCatalog("sched");
 
     const r1=$id("resGantt"), r2=$id("resMats"), r3=$id("resMap");
     if(r1) r1.onclick=()=>renderResults("gantt");
@@ -1535,6 +1570,7 @@
     const pT=document.getElementById("pTz"); if(pT) pT.value=state.project.tz||"Europe/Madrid";
     personTabs(); renderClient(); renderStatus(); renderStaffList(); wire();
     showOnly("clienteView");
+    updateScheduleCatalogButton();
   });
 })();
 

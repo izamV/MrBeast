@@ -106,7 +106,19 @@
         const del=el("button","btn danger","Eliminar"); del.onclick=()=>{ state.vehicles.splice(i,1); emitChanged(); openCatVeh(cont); };
         tr.appendChild(n); tr.appendChild(del); tb.appendChild(tr);
         lockMark(tr, !!v.locked);
-      });
+    });
     cont.appendChild(tbl);
+  };
+
+  window.openCatSchedule = (cont)=>{
+    cont.innerHTML="";
+    cont.appendChild(el("h3",null,"Catálogo: Horarios"));
+    const mount=el("div","schedule-catalog");
+    cont.appendChild(mount);
+    if(typeof window.setScheduleCatalogTarget === "function"){
+      window.setScheduleCatalogTarget(mount);
+    }else{
+      mount.appendChild(el("div","mini","La herramienta de horarios no está disponible."));
+    }
   };
 })();
