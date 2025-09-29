@@ -3376,6 +3376,61 @@
     return {sessions, warnings, stats};
   };
 
+  const compareScoreTuples = (a, b)=>{
+    const len=Math.min(a.length, b.length);
+    for(let i=0;i<len;i+=1){
+      if(a[i]!==b[i]) return a[i]-b[i];
+    }
+    return a.length-b.length;
+  };
+
+  const previewScheduleWithInfo = (staffId, info, itemsByStaff)=>{
+    const baseItems = itemsByStaff.get(staffId)||[];
+    const previewItems = baseItems.concat(info);
+    return buildScheduleForStaff(staffId, previewItems);
+  };
+
+  const scorePreviewResult = (preview, staffId, staffOrder)=>{
+    const sessions=preview?.sessions||[];
+    const stats=preview?.stats||{};
+    const warnings=preview?.warnings||[];
+    const hasSessionPenalty = sessions.length ? 0 : 1;
+    const windowViolations = Number(stats.windowViolations)||0;
+    const fixedConflicts = Number(stats.fixedConflicts)||0;
+    const warningCount = warnings.length;
+    const gapMinutes = Number(stats.gapMinutes)||0;
+    const earliest = Number.isFinite(stats.earliestStart) ? stats.earliestStart : null;
+    const startScore = earliest!=null ? -earliest : Number.NEGATIVE_INFINITY;
+    const totalMinutes = Number(stats.totalMinutes)||0;
+    const sessionCount = Number(stats.sessionCount)||0;
+    const orderIndex = staffOrder.get(staffId) ?? Number.MAX_SAFE_INTEGER;
+    return [
+      hasSessionPenalty,
+      windowViolations,
+      fixedConflicts,
+      warningCount,
+      gapMinutes,
+      startScore,
+      totalMinutes,
+      sessionCount,
+      orderIndex
+    ];
+  };
+
+  const pickBestStaffForInfo = (info, candidateIds, itemsByStaff, staffOrder)=>{
+    let bestId=null;
+    let bestScore=null;
+    candidateIds.forEach(staffId=>{
+      const preview=previewScheduleWithInfo(staffId, info, itemsByStaff);
+      const score=scorePreviewResult(preview, staffId, staffOrder);
+      if(!bestScore || compareScoreTuples(score, bestScore)<0){
+        bestScore=score;
+        bestId=staffId;
+      }
+    });
+    return bestId;
+  };
+
   const computeGlobalMetrics = (metricsByStaff, staffList)=>{
     const summary={
       staffWithSessions:0,
@@ -3434,32 +3489,85 @@
     const staffList=(state.staff||[]);
     if(!staffList.length) return {ok:false,msg:"Añade miembros del staff para generar los horarios."};
 
+    const staffIds=staffList.map(st=>st.id);
+    const staffSet=new Set(staffIds);
+    const staffOrder=new Map(staffIds.map((id,idx)=>[id, idx]));
+    const preferredAssignments=new Map();
+    tasks.forEach(task=>{
+      const preferred=(task.assignedStaffIds||[]).filter(id=>staffSet.has(id));
+      preferredAssignments.set(task.id, preferred);
+    });
+
     const { assignmentMap, missingAssignments, globalWarnings: initialGlobalWarnings } = sanitizeAssignments(tasks, staffList);
     if(missingAssignments.length){
       return {ok:false,msg:"No hay staff disponible para todas las tareas."};
     }
 
-    tasks.forEach(task=>{
-      const assigned=(assignmentMap.get(task.id)||[]).slice();
-      task.assignedStaffIds=assigned;
-    });
-
     const orderMap=hierarchyOrder();
     const itemsByStaff=new Map();
+    staffList.forEach(st=>itemsByStaff.set(st.id, []));
+    const infoByTask=new Map();
     tasks.forEach(task=>{
-      const assigned=assignmentMap.get(task.id)||[];
       const root=rootTaskFor(task);
-      assigned.forEach(staffId=>{
-        if(!itemsByStaff.has(staffId)) itemsByStaff.set(staffId, []);
-        itemsByStaff.get(staffId).push(computeScheduleInfo(task, root, orderMap));
-      });
+      infoByTask.set(task.id, computeScheduleInfo(task, root, orderMap));
+    });
+
+    const sortedTasks=tasks.slice().sort((a,b)=>{
+      const oa=orderMap.get(a.id)||0;
+      const ob=orderMap.get(b.id)||0;
+      if(oa!==ob) return oa-ob;
+      return (a.id||"").localeCompare(b.id||"");
+    });
+
+    sortedTasks.forEach(task=>{
+      const info=infoByTask.get(task.id);
+      if(!info) return;
+      if(task.structureRelation === "milestone"){
+        let assigned=(assignmentMap.get(task.id)||[]).filter(id=>itemsByStaff.has(id));
+        if(!assigned.length){
+          assigned = staffIds.length ? [staffIds[0]] : [];
+        }
+        task.assignedStaffIds = assigned.slice();
+        assignmentMap.set(task.id, task.assignedStaffIds.slice());
+        assigned.forEach(staffId=>{
+          if(!itemsByStaff.has(staffId)) itemsByStaff.set(staffId, []);
+          itemsByStaff.get(staffId).push(info);
+        });
+        return;
+      }
+
+      let candidates=(preferredAssignments.get(task.id)||[]).filter(id=>itemsByStaff.has(id));
+      if(!candidates.length){
+        candidates=(assignmentMap.get(task.id)||[]).filter(id=>itemsByStaff.has(id));
+      }
+      if(!candidates.length){
+        candidates=staffIds.filter(id=>itemsByStaff.has(id));
+      }
+      candidates=[...new Set(candidates)];
+
+      let chosen=null;
+      if(candidates.length===1){
+        chosen=candidates[0];
+      }else if(candidates.length){
+        chosen=pickBestStaffForInfo(info, candidates, itemsByStaff, staffOrder) || candidates[0];
+      }
+
+      if(chosen){
+        task.assignedStaffIds=[chosen];
+        assignmentMap.set(task.id, task.assignedStaffIds.slice());
+        if(!itemsByStaff.has(chosen)) itemsByStaff.set(chosen, []);
+        itemsByStaff.get(chosen).push(info);
+      }else{
+        task.assignedStaffIds=[];
+        assignmentMap.set(task.id, []);
+      }
     });
 
     const warningsByStaff={};
     const sessionsByStaff={};
     const metricsByStaff={};
     staffList.forEach(st=>{
-      const items=itemsByStaff.get(st.id)||[];
+      const items=(itemsByStaff.get(st.id)||[]).slice();
       const result=buildScheduleForStaff(st.id, items);
       sessionsByStaff[st.id]=result.sessions;
       warningsByStaff[st.id]=result.warnings;
