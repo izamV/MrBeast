@@ -282,14 +282,53 @@
     if(mins==null) return null;
     return roundToFive(mins);
   };
-  const defaultPretaskLower = ()=> 0;
-  const defaultPretaskUpper = (rootTask, lower, duration)=>{
-    const latestFromRoot = Number.isFinite(rootTask?.startMin)
-      ? roundToFive(clampToDay(rootTask.startMin - duration))
-      : roundToFive(clampToDay(lower + duration));
-    return Math.max(lower, latestFromRoot);
+  const PRETASK_MIN_LOWER = 60;
+  const defaultPretaskLower = ()=> PRETASK_MIN_LOWER;
+  const resolvePretaskParent = (task, rootTask)=>{
+    if(!task) return rootTask;
+    if(task.structureParentId){
+      const parent = getTaskById(task.structureParentId);
+      if(parent) return parent;
+    }
+    return rootTask;
   };
-  const ensurePretaskBounds = (task, rootTask)=>{
+  const inferPretaskAnchorStart = (task, rootTask, parentTask)=>{
+    const anchor = parentTask || resolvePretaskParent(task, rootTask) || rootTask;
+    if(!anchor) return null;
+    if(Number.isFinite(anchor.startMin)){
+      return roundToFive(clampToDay(anchor.startMin));
+    }
+    if(anchor.limitLateMinEnabled && Number.isFinite(anchor.limitLateMin)){
+      return roundToFive(clampToDay(anchor.limitLateMin));
+    }
+    if(anchor.structureRelation === "pre"){
+      const grandParent = anchor.structureParentId ? getTaskById(anchor.structureParentId) : rootTask;
+      const upstream = inferPretaskAnchorStart(anchor, rootTask, grandParent);
+      if(upstream!=null){
+        const anchorDuration = Math.max(5, roundToFive(Number(anchor.durationMin)||PRETASK_DEFAULT_DURATION));
+        const candidate = roundToFive(clampToDay(upstream - anchorDuration));
+        return Math.max(0, candidate);
+      }
+    }
+    if(anchor === rootTask && Number.isFinite(rootTask?.startMin)){
+      return roundToFive(clampToDay(rootTask.startMin));
+    }
+    if(Number.isFinite(rootTask?.startMin)){
+      return roundToFive(clampToDay(rootTask.startMin));
+    }
+    return null;
+  };
+  const defaultPretaskUpper = (task, rootTask, lower, duration, parentTask)=>{
+    const anchorStart = inferPretaskAnchorStart(task, rootTask, parentTask);
+    if(anchorStart==null){
+      const fallback = roundToFive(clampToDay(lower + duration));
+      return Math.max(lower, fallback);
+    }
+    const candidate = roundToFive(clampToDay(anchorStart - duration));
+    const bounded = Math.max(lower, Math.min(candidate, anchorStart));
+    return Math.max(lower, bounded);
+  };
+  const ensurePretaskBounds = (task, rootTask, parentTask)=>{
     if(!task || task.structureRelation !== "pre") return;
     const duration = Math.max(5, roundToFive(Number(task.durationMin)||PRETASK_DEFAULT_DURATION));
     const rangeRequested = !!task.limitEarlyMinEnabled || !!task.limitLateMinEnabled;
@@ -297,10 +336,15 @@
       ? roundToFive(clampToDay(task.limitEarlyMin))
       : defaultPretaskLower();
     const minLower = defaultPretaskLower();
-    const computeLatestCap = (baseLower)=> Number.isFinite(rootTask?.startMin)
-      ? Math.max(baseLower, roundToFive(clampToDay(rootTask.startMin - duration)))
-      : Math.max(baseLower, DAY_MAX_MIN);
-    const defaultUpperFor = (baseLower)=> defaultPretaskUpper(rootTask, baseLower, duration);
+    const anchorStart = inferPretaskAnchorStart(task, rootTask, parentTask);
+    const computeLatestCap = (baseLower)=>{
+      if(anchorStart!=null){
+        const cap = roundToFive(clampToDay(anchorStart - duration));
+        return Math.max(baseLower, cap);
+      }
+      return Math.max(baseLower, DAY_MAX_MIN);
+    };
+    const defaultUpperFor = (baseLower)=> defaultPretaskUpper(task, rootTask, baseLower, duration, parentTask);
 
     let lower = rangeRequested ? storedLowerRaw : minLower;
     lower = roundToFive(clampToDay(lower));
@@ -349,7 +393,7 @@
     const visit=(node)=>{
       getTaskChildren(node.id).forEach(child=>{
         if(child.structureRelation === "pre"){
-          ensurePretaskBounds(child, rootTask);
+          ensurePretaskBounds(child, rootTask, node);
           visit(child);
         }
       });
@@ -421,15 +465,48 @@
     });
   };
 
-  const defaultPosttaskLower = (rootTask)=>{
-    if(Number.isFinite(rootTask?.endMin)){
-      return roundToFive(clampToDay(rootTask.endMin));
+  const resolvePosttaskParent = (task, rootTask)=>{
+    if(task?.structureParentId){
+      const parent = getTaskById(task.structureParentId);
+      if(parent) return parent;
     }
-    if(Number.isFinite(rootTask?.startMin) && Number.isFinite(rootTask?.durationMin)){
-      const fallback = rootTask.startMin + Math.max(5, Number(rootTask.durationMin)||PRETASK_DEFAULT_DURATION);
-      return roundToFive(clampToDay(fallback));
+    return rootTask;
+  };
+
+  const inferPosttaskAnchorFinish = (task, rootTask, parentTask)=>{
+    const anchor = parentTask || resolvePosttaskParent(task, rootTask) || rootTask;
+    if(!anchor) return roundToFive(clampToDay(defaultTimelineStart()));
+    if(Number.isFinite(anchor.endMin)){
+      return roundToFive(clampToDay(anchor.endMin));
+    }
+    const duration = Math.max(5, roundToFive(Number(anchor.durationMin)||PRETASK_DEFAULT_DURATION));
+    if(Number.isFinite(anchor.startMin)){
+      return roundToFive(clampToDay(anchor.startMin + duration));
+    }
+    if(anchor.limitLateMinEnabled && Number.isFinite(anchor.limitLateMin)){
+      return roundToFive(clampToDay(anchor.limitLateMin));
+    }
+    if(Number.isFinite(anchor.limitEarlyMin)){
+      return roundToFive(clampToDay(anchor.limitEarlyMin + duration));
+    }
+    if(anchor === rootTask){
+      if(Number.isFinite(rootTask?.endMin)){
+        return roundToFive(clampToDay(rootTask.endMin));
+      }
+      if(Number.isFinite(rootTask?.startMin) && Number.isFinite(rootTask?.durationMin)){
+        const fallback = rootTask.startMin + Math.max(5, Number(rootTask.durationMin)||PRETASK_DEFAULT_DURATION);
+        return roundToFive(clampToDay(fallback));
+      }
+    }
+    const ancestor = anchor.structureParentId ? getTaskById(anchor.structureParentId) : rootTask;
+    if(ancestor && ancestor !== anchor){
+      return inferPosttaskAnchorFinish(anchor, rootTask, ancestor);
     }
     return roundToFive(clampToDay(defaultTimelineStart()));
+  };
+
+  const defaultPosttaskLower = (task, rootTask, parentTask)=>{
+    return inferPosttaskAnchorFinish(task, rootTask, parentTask);
   };
 
   const defaultPosttaskUpper = (rootTask, lower, duration)=>{
@@ -437,11 +514,12 @@
     return Math.min(DAY_MAX_MIN, baseUpper);
   };
 
-  const ensurePosttaskBounds = (task, rootTask)=>{
+  const ensurePosttaskBounds = (task, rootTask, parentTask)=>{
     if(!task || task.structureRelation !== "post") return;
     const duration = Math.max(5, roundToFive(Number(task.durationMin)||PRETASK_DEFAULT_DURATION));
     const rangeRequested = !!task.limitEarlyMinEnabled || !!task.limitLateMinEnabled;
-    const minLower = defaultPosttaskLower(rootTask);
+    const resolvedParent = parentTask || resolvePosttaskParent(task, rootTask);
+    const minLower = defaultPosttaskLower(task, rootTask, resolvedParent);
     const storedLowerRaw = Number.isFinite(task.limitEarlyMin)
       ? roundToFive(clampToDay(task.limitEarlyMin))
       : minLower;
@@ -482,7 +560,7 @@
     const visit=(node)=>{
       getTaskChildren(node.id).forEach(child=>{
         if(child.structureRelation === "post"){
-          ensurePosttaskBounds(child, rootTask);
+          ensurePosttaskBounds(child, rootTask, node);
           visit(child);
         }
       });
@@ -1728,8 +1806,8 @@
     task.limitEarlyMinEnabled = false;
     task.limitLateMinEnabled = false;
     task.limitEarlyMin = lower;
-    task.limitLateMin = defaultPretaskUpper(rootTask, lower, task.durationMin);
-    ensurePretaskBounds(task, rootTask);
+    task.limitLateMin = defaultPretaskUpper(task, rootTask, lower, task.durationMin, parent);
+    ensurePretaskBounds(task, rootTask, parent);
     touchTask(task);
     state.project.view.selectedTaskId = rootTask.id;
     state.project.view.pretaskEditorId = task.id;
@@ -1738,6 +1816,10 @@
 
   const renderPretaskEditor = (rootTask, level, task, parents)=>{
     const editor=el("div","pretask-editor");
+    const resolveParent=()=> resolvePosttaskParent(task, rootTask);
+    const parentTask=resolveParent();
+    const resolveParent=()=> resolvePretaskParent(task, rootTask);
+    const parentTask=resolveParent();
 
     const nameField=el("div","pretask-field");
     nameField.appendChild(el("span","pretask-field-label","Nombre de la tarea"));
@@ -1774,7 +1856,7 @@
         return;
       }
       task.durationMin = parsed;
-      ensurePretaskBounds(task, rootTask);
+      ensurePretaskBounds(task, rootTask, resolveParent());
       touchTask(task);
       state.project.view.pretaskEditorId = task.id;
       renderClient();
@@ -1820,11 +1902,12 @@
     const rangeEnabled=!!task.limitEarlyMinEnabled || !!task.limitLateMinEnabled;
     const storedLower=Number.isFinite(task.limitEarlyMin) ? roundToFive(clampToDay(task.limitEarlyMin)) : defaultPretaskLower();
     const effectiveLower=rangeEnabled ? storedLower : defaultPretaskLower();
-    const latestCap=Number.isFinite(rootTask?.startMin)
-      ? Math.max(effectiveLower, roundToFive(clampToDay(rootTask.startMin - duration)))
+    const anchorStart = inferPretaskAnchorStart(task, rootTask, parentTask);
+    const latestCap=anchorStart!=null
+      ? Math.max(effectiveLower, roundToFive(clampToDay(anchorStart - duration)))
       : Math.max(effectiveLower, DAY_MAX_MIN);
     const latestLowerForDuration=Math.max(defaultPretaskLower(), latestCap - duration);
-    const upperDefault=defaultPretaskUpper(rootTask, effectiveLower, duration);
+    const upperDefault=defaultPretaskUpper(task, rootTask, effectiveLower, duration, parentTask);
     const storedUpper=Number.isFinite(task.limitLateMin) ? roundToFive(clampToDay(task.limitLateMin)) : upperDefault;
     const minUpperForInput=Math.min(latestCap, effectiveLower + duration);
 
@@ -1841,7 +1924,7 @@
       const enabled=rangeToggle.checked;
       task.limitEarlyMinEnabled = enabled;
       task.limitLateMinEnabled = enabled;
-      ensurePretaskBounds(task, rootTask);
+      ensurePretaskBounds(task, rootTask, resolveParent());
       touchTask(task);
       state.project.view.pretaskEditorId = task.id;
       renderClient();
@@ -1865,7 +1948,7 @@
       const parsed=parseTimeFromInput(lowerInput.value);
       if(parsed==null) return;
       task.limitEarlyMin = parsed;
-      ensurePretaskBounds(task, rootTask);
+      ensurePretaskBounds(task, rootTask, resolveParent());
       touchTask(task);
       state.project.view.pretaskEditorId = task.id;
       renderClient();
@@ -1874,7 +1957,7 @@
       const parsed=parseTimeFromInput(lowerInput.value);
       if(parsed==null) return;
       task.limitEarlyMin = parsed;
-      ensurePretaskBounds(task, rootTask);
+      ensurePretaskBounds(task, rootTask, resolveParent());
       touchTask(task);
       state.project.view.pretaskEditorId = task.id;
       renderClient();
@@ -1898,7 +1981,7 @@
       const parsed=parseTimeFromInput(upperInput.value);
       if(parsed==null) return;
       task.limitLateMin = parsed;
-      ensurePretaskBounds(task, rootTask);
+      ensurePretaskBounds(task, rootTask, resolveParent());
       touchTask(task);
       state.project.view.pretaskEditorId = task.id;
       renderClient();
@@ -1907,7 +1990,7 @@
       const parsed=parseTimeFromInput(upperInput.value);
       if(parsed==null) return;
       task.limitLateMin = parsed;
-      ensurePretaskBounds(task, rootTask);
+      ensurePretaskBounds(task, rootTask, resolveParent());
       touchTask(task);
       state.project.view.pretaskEditorId = task.id;
       renderClient();
@@ -2102,12 +2185,12 @@
     const task=createTask({ parentId: parent.id, relation:"post" });
     task.actionName = "";
     task.durationMin = PRETASK_DEFAULT_DURATION;
-    const lower = defaultPosttaskLower(rootTask);
+    const lower = defaultPosttaskLower(task, rootTask, parent);
     task.limitEarlyMinEnabled = false;
     task.limitLateMinEnabled = false;
     task.limitEarlyMin = lower;
     task.limitLateMin = defaultPosttaskUpper(rootTask, lower, task.durationMin);
-    ensurePosttaskBounds(task, rootTask);
+    ensurePosttaskBounds(task, rootTask, parent);
     touchTask(task);
     state.project.view.selectedTaskId = rootTask.id;
     state.project.view.posttaskEditorId = task.id;
@@ -2116,6 +2199,8 @@
 
   const renderPosttaskEditor = (rootTask, level, task, parents)=>{
     const editor=el("div","pretask-editor");
+    const resolveParent=()=> resolvePosttaskParent(task, rootTask);
+    const parentTask=resolveParent();
 
     const nameField=el("div","pretask-field");
     nameField.appendChild(el("span","pretask-field-label","Nombre de la tarea"));
@@ -2152,7 +2237,7 @@
         return;
       }
       task.durationMin = parsed;
-      ensurePosttaskBounds(task, rootTask);
+      ensurePosttaskBounds(task, rootTask, resolveParent());
       touchTask(task);
       state.project.view.posttaskEditorId = task.id;
       renderClient();
@@ -2194,7 +2279,7 @@
     locationField.appendChild(locationSelect);
     editor.appendChild(locationField);
 
-    const defaultLower = defaultPosttaskLower(rootTask);
+    const defaultLower = defaultPosttaskLower(task, rootTask, parentTask);
     const duration=Math.max(5, roundToFive(Number(task.durationMin)||PRETASK_DEFAULT_DURATION));
     const rangeEnabled=!!task.limitEarlyMinEnabled || !!task.limitLateMinEnabled;
     const storedLower=Number.isFinite(task.limitEarlyMin) ? roundToFive(clampToDay(task.limitEarlyMin)) : defaultLower;
@@ -2217,7 +2302,7 @@
       const enabled=rangeToggle.checked;
       task.limitEarlyMinEnabled = enabled;
       task.limitLateMinEnabled = enabled;
-      ensurePosttaskBounds(task, rootTask);
+      ensurePosttaskBounds(task, rootTask, resolveParent());
       touchTask(task);
       state.project.view.posttaskEditorId = task.id;
       renderClient();
@@ -2241,7 +2326,7 @@
       const parsed=parseTimeFromInput(lowerInput.value);
       if(parsed==null) return;
       task.limitEarlyMin = parsed;
-      ensurePosttaskBounds(task, rootTask);
+      ensurePosttaskBounds(task, rootTask, resolveParent());
       touchTask(task);
       state.project.view.posttaskEditorId = task.id;
       renderClient();
@@ -2250,7 +2335,7 @@
       const parsed=parseTimeFromInput(lowerInput.value);
       if(parsed==null) return;
       task.limitEarlyMin = parsed;
-      ensurePosttaskBounds(task, rootTask);
+      ensurePosttaskBounds(task, rootTask, resolveParent());
       touchTask(task);
       state.project.view.posttaskEditorId = task.id;
       renderClient();
@@ -2274,7 +2359,7 @@
       const parsed=parseTimeFromInput(upperInput.value);
       if(parsed==null) return;
       task.limitLateMin = parsed;
-      ensurePosttaskBounds(task, rootTask);
+      ensurePosttaskBounds(task, rootTask, resolveParent());
       touchTask(task);
       state.project.view.posttaskEditorId = task.id;
       renderClient();
@@ -2283,7 +2368,7 @@
       const parsed=parseTimeFromInput(upperInput.value);
       if(parsed==null) return;
       task.limitLateMin = parsed;
-      ensurePosttaskBounds(task, rootTask);
+      ensurePosttaskBounds(task, rootTask, resolveParent());
       touchTask(task);
       state.project.view.posttaskEditorId = task.id;
       renderClient();
@@ -3113,22 +3198,23 @@
       return Math.max(0, task.limitEarlyMin);
     }
     if(task.structureRelation === "pre"){
-      if(Number.isFinite(rootTask?.startMin)){
-        return Math.max(0, rootTask.startMin - duration);
+      const parentTask = resolvePretaskParent(task, rootTask);
+      const anchorStart = inferPretaskAnchorStart(task, rootTask, parentTask);
+      const fallback = defaultPretaskLower();
+      if(anchorStart!=null){
+        const candidate = Math.max(0, anchorStart - duration);
+        return Math.max(fallback, candidate);
       }
-      return 0;
+      return fallback;
     }
     if(task.structureRelation === "parallel"){
       if(Number.isFinite(rootTask?.startMin)) return rootTask.startMin;
       return defaultTimelineStart();
     }
     if(task.structureRelation === "post"){
-      if(Number.isFinite(rootTask?.endMin)) return rootTask.endMin;
-      if(Number.isFinite(rootTask?.startMin) && Number.isFinite(rootTask?.durationMin)){
-        const rootEnd = rootTask.startMin + Math.max(5, Number(rootTask.durationMin)||duration);
-        return rootEnd;
-      }
-      return defaultTimelineStart();
+      const parentTask = resolvePosttaskParent(task, rootTask);
+      const anchorFinish = inferPosttaskAnchorFinish(task, rootTask, parentTask);
+      return anchorFinish!=null ? anchorFinish : defaultTimelineStart();
     }
     if(Number.isFinite(task.startMin)) return task.startMin;
     return defaultTimelineStart();
@@ -3140,10 +3226,12 @@
       return Math.max(base, task.limitLateMin);
     }
     if(task.structureRelation === "pre"){
-      if(Number.isFinite(rootTask?.startMin)){
-        return Math.max(base, rootTask.startMin - Math.max(5, duration));
+      const parentTask = resolvePretaskParent(task, rootTask);
+      const anchorStart = inferPretaskAnchorStart(task, rootTask, parentTask);
+      if(anchorStart!=null){
+        return Math.max(base, anchorStart - Math.max(5, duration));
       }
-      return base;
+      return Math.max(base, defaultPretaskLower());
     }
     if(task.structureRelation === "parallel"){
       if(Number.isFinite(rootTask?.endMin)){
@@ -3153,8 +3241,10 @@
       return base;
     }
     if(task.structureRelation === "post"){
-      if(Number.isFinite(rootTask?.endMin)) return Math.max(base, rootTask.endMin);
-      return base;
+      const parentTask = resolvePosttaskParent(task, rootTask);
+      const anchorFinish = inferPosttaskAnchorFinish(task, rootTask, parentTask);
+      if(anchorFinish!=null) return Math.max(base, anchorFinish);
+      return Math.max(base, defaultTimelineStart());
     }
     return Number.isFinite(task.startMin) ? task.startMin : base;
   };
@@ -3166,8 +3256,12 @@
       }
       return normalizeMinute(task.limitLateMin + info.duration);
     }
-    if(task.structureRelation === "post" && Number.isFinite(rootTask?.endMin)){
-      return normalizeMinute(rootTask.endMin + info.duration);
+    if(task.structureRelation === "post"){
+      const parentTask = resolvePosttaskParent(task, rootTask);
+      const anchorFinish = inferPosttaskAnchorFinish(task, rootTask, parentTask);
+      if(anchorFinish!=null){
+        return normalizeMinute(anchorFinish + info.duration);
+      }
     }
     if(info.fixedStart && info.endMin!=null) return info.endMin;
     return null;
