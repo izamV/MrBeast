@@ -42,6 +42,11 @@
     });
     st.vehicles=st.vehicles||[]; st.staff=st.staff||[]; st.sessions=st.sessions||{CLIENTE:[]};
     st.horaInicial=st.horaInicial||{}; st.localizacionInicial=st.localizacionInicial||{};
+    st.scheduleMeta=st.scheduleMeta||{};
+    if(typeof st.scheduleMeta.generatedAt==="undefined") st.scheduleMeta.generatedAt=null;
+    st.scheduleMeta.warningsByStaff=st.scheduleMeta.warningsByStaff||{};
+    st.scheduleMeta.globalWarnings=st.scheduleMeta.globalWarnings||[];
+    if(typeof st.scheduleMeta.activeStaffId==="undefined") st.scheduleMeta.activeStaffId=null;
     st.project=st.project||{nombre:"Proyecto",fecha:"",tz:"Europe/Madrid",updatedAt:"",view:{}}; st.project.view=st.project.view||{};
     st.project.view.lastTab=st.project.view.lastTab||"CLIENTE"; st.project.view.subGantt=st.project.view.subGantt||"Gantt"; st.project.view.selectedIndex=st.project.view.selectedIndex||{};
     if(!st.sessions.CLIENTE) st.sessions.CLIENTE=[];

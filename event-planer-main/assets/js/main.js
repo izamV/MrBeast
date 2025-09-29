@@ -54,6 +54,8 @@
       const del=el("button","del","X"); del.title="Eliminar"; del.onclick=()=>{ if((state.sessions?.[p.id]||[]).length){ alert("No se puede eliminar: tiene acciones."); return; } state.staff=state.staff.filter(x=>x.id!==p.id); touch(); personTabs(); renderClient(); renderStaffList(); };
       chip.appendChild(del); box.appendChild(chip);
     });
+    if(typeof window.updateScheduleCatalogButton === "function") window.updateScheduleCatalogButton();
+    if(typeof window.updateScheduleCatalogViews === "function") window.updateScheduleCatalogViews();
   };
 
   function openCatalog(which){
@@ -64,7 +66,21 @@
     if(which==="task") openCatTask(cont);
     if(which==="mat") openCatMat(cont);
     if(which==="veh") openCatVeh(cont);
+    if(which==="sched") openCatSchedule(cont);
   }
+
+  function updateScheduleCatalogButton(){
+    const btn=document.getElementById("catSched");
+    if(!btn) return;
+    const available = typeof window.isScheduleCatalogAvailable === "function"
+      ? !!window.isScheduleCatalogAvailable()
+      : false;
+    btn.disabled = !available;
+    btn.title = available
+      ? ""
+      : "Bloquea todas las tareas del cliente para generar los horarios del staff.";
+  }
+  window.updateScheduleCatalogButton = updateScheduleCatalogButton;
 
   function renderResults(tab){
     showOnly("resultView");
@@ -115,6 +131,8 @@
     if(c2) c2.onclick=()=>openCatalog("task");
     if(c3) c3.onclick=()=>openCatalog("mat");
     if(c4) c4.onclick=()=>openCatalog("veh");
+    const c5=$id("catSched");
+    if(c5) c5.onclick=()=>openCatalog("sched");
 
     const r1=$id("resGantt"), r2=$id("resMats"), r3=$id("resMap");
     if(r1) r1.onclick=()=>renderResults("gantt");
@@ -134,6 +152,7 @@
     const pT=document.getElementById("pTz"); if(pT) pT.value=state.project.tz||"Europe/Madrid";
     personTabs(); renderClient(); renderStatus(); renderStaffList(); wire();
     showOnly("clienteView");
+    updateScheduleCatalogButton();
   });
 })();
 
