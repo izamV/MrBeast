@@ -2985,6 +2985,7 @@
   const scheduleTargets = new Set();
   let scheduleSequence = 0;
   const TRANSPORT_GAP_MINUTES = 5;
+  const DEFAULT_EARLY_START_THRESHOLD = 7*60;
 
   function notifyScheduleSubscribers(){
     if(typeof window.updateScheduleCatalogButton === "function") window.updateScheduleCatalogButton();
@@ -2997,11 +2998,36 @@
     state.scheduleMeta.warningsByStaff = state.scheduleMeta.warningsByStaff || {};
     state.scheduleMeta.globalWarnings = state.scheduleMeta.globalWarnings || [];
     if(typeof state.scheduleMeta.activeStaffId === "undefined") state.scheduleMeta.activeStaffId = null;
+    state.scheduleMeta.metricsByStaff = state.scheduleMeta.metricsByStaff || {};
+    state.scheduleMeta.globalMetrics = state.scheduleMeta.globalMetrics || {};
+    state.scheduleMeta.parameters = state.scheduleMeta.parameters || {};
+    const params = state.scheduleMeta.parameters;
+    const rawThreshold = Number(params.earlyStartThreshold);
+    if(Number.isFinite(rawThreshold)){
+      params.earlyStartThreshold = roundToFive(Math.max(0, Math.min(DAY_MAX_MIN, rawThreshold)));
+    }else{
+      params.earlyStartThreshold = DEFAULT_EARLY_START_THRESHOLD;
+    }
   };
 
   const normalizeMinute = (value)=>{
     if(!Number.isFinite(value)) return null;
     return roundToFive(Math.max(0, Math.min(DAY_MAX_MIN, Number(value)||0)));
+  };
+
+  const getScheduleParameters = ()=>{
+    ensureScheduleMeta();
+    const params = state.scheduleMeta.parameters || {};
+    const early = normalizeMinute(params.earlyStartThreshold);
+    return {
+      earlyStartThreshold: early ?? DEFAULT_EARLY_START_THRESHOLD
+    };
+  };
+
+  const setScheduleParameter = (key, value)=>{
+    ensureScheduleMeta();
+    state.scheduleMeta.parameters = state.scheduleMeta.parameters || {};
+    state.scheduleMeta.parameters[key] = value;
   };
 
   window.isScheduleCatalogAvailable = ()=>{
@@ -3239,7 +3265,21 @@
   const buildScheduleForStaff = (staffId, items)=>{
     const warnings=[];
     const sessions=[];
-    if(!items.length) return {sessions, warnings};
+    const stats={
+      staffId,
+      tasksScheduled:0,
+      sessionCount:0,
+      earliestStart:null,
+      latestEnd:null,
+      totalMinutes:0,
+      gapMinutes:0,
+      breakCount:0,
+      transportSessions:0,
+      locationIssues:0,
+      windowViolations:0,
+      fixedConflicts:0
+    };
+    if(!items.length) return {sessions, warnings, stats};
     items.sort((a,b)=>{
       const sk=(a.sortKey??Infinity)-(b.sortKey??Infinity);
       if(sk!==0) return sk;
@@ -3257,6 +3297,7 @@
       const duration=Math.max(5, Number(info.duration)||5);
       if(info.locationRequired && !info.locationId){
         warnings.push(`${label}: falta localización.`);
+        stats.locationIssues+=1;
       }
       let earliest = info.fixedStart ? (info.startMin ?? info.earliest ?? 0) : (info.earliest ?? 0);
       if(!Number.isFinite(earliest)) earliest = 0;
@@ -3265,6 +3306,7 @@
       let plannedStart = info.fixedStart ? (info.startMin ?? earliest) : Math.max(earliest, currentTime);
       if(info.fixedStart && info.startMin!=null && currentTime>info.startMin){
         warnings.push(`${label}: inicio fijo ${toHHMM(info.startMin)} solapa con tareas previas.`);
+        stats.fixedConflicts+=1;
         plannedStart = currentTime;
       }
 
@@ -3274,11 +3316,13 @@
         const transport=makeTransportSession(lastLocation, info.locationId, travelStart, travelEnd);
         if(transport){
           sessions.push(transport);
+          stats.transportSessions+=1;
           currentTime = transport.endMin;
           plannedStart = Math.max(plannedStart, transport.endMin);
         }
         if(info.fixedStart && info.startMin!=null && plannedStart>info.startMin){
           warnings.push(`${label}: el transporte retrasa el inicio fijado (${toHHMM(info.startMin)}).`);
+          stats.fixedConflicts+=1;
         }
       }
 
@@ -3287,6 +3331,7 @@
         plannedStart = Math.max(plannedStart, currentTime);
         if(latest!=null && plannedStart>latest){
           warnings.push(`${label}: inicio ${toHHMM(plannedStart)} fuera de la franja (máximo ${toHHMM(latest)}).`);
+          stats.windowViolations+=1;
         }
       }
 
@@ -3295,17 +3340,88 @@
       if(end<=start){
         warnings.push(`${label}: duración incompatible tras los ajustes.`);
         currentTime = end;
+        stats.windowViolations+=1;
         return;
       }
       if(info.latestEnd!=null && end>info.latestEnd){
         warnings.push(`${label}: final ${toHHMM(end)} supera el límite (${toHHMM(info.latestEnd)}).`);
+        stats.windowViolations+=1;
       }
       sessions.push(makeTaskSession(task, start, end));
+      stats.tasksScheduled+=1;
       currentTime = end;
       if(info.locationId) lastLocation = info.locationId;
     });
     sessions.sort((a,b)=> (a.startMin||0)-(b.startMin||0));
-    return {sessions, warnings};
+    stats.sessionCount = sessions.length;
+    let prevEnd=null;
+    sessions.forEach(session=>{
+      const start = Number.isFinite(session.startMin)?session.startMin:null;
+      const end = Number.isFinite(session.endMin)?session.endMin:null;
+      if(start==null || end==null) return;
+      if(stats.earliestStart==null || start<stats.earliestStart) stats.earliestStart=start;
+      if(stats.latestEnd==null || end>stats.latestEnd) stats.latestEnd=end;
+      const duration=Math.max(0, end-start);
+      stats.totalMinutes+=duration;
+      if(prevEnd!=null){
+        if(start>prevEnd){
+          stats.breakCount+=1;
+          stats.gapMinutes+=start-prevEnd;
+        }
+        if(end>prevEnd) prevEnd=end;
+      }else{
+        prevEnd=end;
+      }
+    });
+    return {sessions, warnings, stats};
+  };
+
+  const computeGlobalMetrics = (metricsByStaff, staffList)=>{
+    const summary={
+      staffWithSessions:0,
+      totalSessions:0,
+      totalMinutes:0,
+      totalGapMinutes:0,
+      breakCount:0,
+      earliestStart:null,
+      latestEnd:null,
+      averageStartMin:null,
+      averageEndMin:null,
+      averageLoadMinutes:0
+    };
+    const startValues=[];
+    const endValues=[];
+    (staffList||[]).forEach(st=>{
+      const stats=metricsByStaff[st.id];
+      if(!stats) return;
+      summary.totalSessions += Number(stats.sessionCount)||0;
+      summary.totalMinutes += Number(stats.totalMinutes)||0;
+      summary.totalGapMinutes += Number(stats.gapMinutes)||0;
+      summary.breakCount += Number(stats.breakCount)||0;
+      if(stats.earliestStart!=null){
+        summary.staffWithSessions+=1;
+        startValues.push(stats.earliestStart);
+        if(summary.earliestStart==null || stats.earliestStart<summary.earliestStart){
+          summary.earliestStart = stats.earliestStart;
+        }
+      }
+      if(stats.latestEnd!=null){
+        endValues.push(stats.latestEnd);
+        if(summary.latestEnd==null || stats.latestEnd>summary.latestEnd){
+          summary.latestEnd = stats.latestEnd;
+        }
+      }else if(stats.earliestStart!=null){
+        endValues.push(stats.earliestStart);
+      }
+    });
+    if(startValues.length){
+      const sumStart=startValues.reduce((acc,val)=>acc+val,0);
+      const sumEnd=endValues.reduce((acc,val)=>acc+val,0);
+      summary.averageStartMin = Math.round(sumStart/startValues.length);
+      summary.averageEndMin = Math.round(sumEnd/startValues.length);
+      summary.averageLoadMinutes = Math.round(summary.totalMinutes/startValues.length);
+    }
+    return summary;
   };
 
   const generateSchedules = ()=>{
@@ -3318,7 +3434,7 @@
     const staffList=(state.staff||[]);
     if(!staffList.length) return {ok:false,msg:"Añade miembros del staff para generar los horarios."};
 
-    const { assignmentMap, missingAssignments, globalWarnings } = sanitizeAssignments(tasks, staffList);
+    const { assignmentMap, missingAssignments, globalWarnings: initialGlobalWarnings } = sanitizeAssignments(tasks, staffList);
     if(missingAssignments.length){
       return {ok:false,msg:"No hay staff disponible para todas las tareas."};
     }
@@ -3341,11 +3457,13 @@
 
     const warningsByStaff={};
     const sessionsByStaff={};
+    const metricsByStaff={};
     staffList.forEach(st=>{
       const items=itemsByStaff.get(st.id)||[];
       const result=buildScheduleForStaff(st.id, items);
       sessionsByStaff[st.id]=result.sessions;
       warningsByStaff[st.id]=result.warnings;
+      metricsByStaff[st.id]=result.stats||{};
     });
 
     Object.entries(sessionsByStaff).forEach(([staffId,sessions])=>{
@@ -3371,9 +3489,21 @@
       staffList.forEach(st=> window.recomputeLocations(st.id));
     }
 
+    const params=getScheduleParameters();
+    const globalWarningSet=new Set(initialGlobalWarnings);
+    staffList.forEach(st=>{
+      const stats=metricsByStaff[st.id]||{};
+      if(params.earlyStartThreshold!=null && stats.earliestStart!=null && stats.earliestStart<params.earlyStartThreshold){
+        globalWarningSet.add(`${st.nombre||st.id}: inicio ${toHHMM(stats.earliestStart)} antes del umbral ${toHHMM(params.earlyStartThreshold)}.`);
+      }
+    });
+    const globalMetrics=computeGlobalMetrics(metricsByStaff, staffList);
+
     state.scheduleMeta.generatedAt = new Date().toISOString();
     state.scheduleMeta.warningsByStaff = warningsByStaff;
-    state.scheduleMeta.globalWarnings = globalWarnings;
+    state.scheduleMeta.metricsByStaff = metricsByStaff;
+    state.scheduleMeta.globalMetrics = globalMetrics;
+    state.scheduleMeta.globalWarnings = [...globalWarningSet];
     Object.keys(state.scheduleMeta.warningsByStaff).forEach(id=>{
       if(!staffList.some(st=>st.id===id)) delete state.scheduleMeta.warningsByStaff[id];
     });
@@ -3381,7 +3511,7 @@
     touch();
     if(typeof window.renderClient === "function") window.renderClient();
     notifyScheduleSubscribers();
-    return {ok:true,warningsByStaff,globalWarnings};
+    return {ok:true,warningsByStaff,globalWarnings:[...globalWarningSet]};
   };
 
   const formatScheduleTimestamp = (iso)=>{
@@ -3419,6 +3549,31 @@
     if(state.scheduleMeta.generatedAt){
       controls.appendChild(el("span","mini",`Última generación: ${formatScheduleTimestamp(state.scheduleMeta.generatedAt)}`));
     }
+    const params=getScheduleParameters();
+    const staffList=(state.staff||[]);
+    const paramsWrap=el("div","schedule-params");
+    const paramLabel=el("span","mini","Aviso si el turno inicia antes de:");
+    const earlyInput=el("input","input");
+    earlyInput.type="time";
+    earlyInput.value=toHHMM(params.earlyStartThreshold ?? DEFAULT_EARLY_START_THRESHOLD);
+    const applyEarlyChange=()=>{
+      const parsed=parseTimeFromInput(earlyInput.value);
+      const normalized=normalizeMinute(parsed!=null ? parsed : params.earlyStartThreshold);
+      const finalValue=normalized ?? DEFAULT_EARLY_START_THRESHOLD;
+      const current = Number(state.scheduleMeta.parameters?.earlyStartThreshold)||0;
+      if(current !== finalValue){
+        setScheduleParameter("earlyStartThreshold", finalValue);
+        touch();
+      }
+      renderScheduleCatalogInto(container);
+    };
+    earlyInput.onchange=applyEarlyChange;
+    earlyInput.onblur=applyEarlyChange;
+    const earlyHint=el("span","mini muted",`Se avisará por inicios anteriores a ${toHHMM(params.earlyStartThreshold)}.`);
+    paramsWrap.appendChild(paramLabel);
+    paramsWrap.appendChild(earlyInput);
+    paramsWrap.appendChild(earlyHint);
+    controls.appendChild(paramsWrap);
     container.appendChild(controls);
 
     if(!available){
@@ -3426,13 +3581,12 @@
       return;
     }
 
-    if(!(state.staff||[]).length){
+    if(!staffList.length){
       container.appendChild(el("div","mini muted","Añade miembros del staff desde la barra lateral para poder generar los horarios."));
       return;
     }
 
     const warningsStore=state.scheduleMeta.warningsByStaff||{};
-    const staffList=(state.staff||[]);
     let removed=false;
     Object.keys(warningsStore).forEach(id=>{
       if(!staffList.some(st=>st.id===id)){
@@ -3447,6 +3601,42 @@
       const warnList=el("ul","warn-text");
       globalWarnings.forEach(msg=> warnList.appendChild(el("li",null,msg)));
       container.appendChild(warnList);
+    }
+
+    if(state.scheduleMeta.generatedAt){
+      const globalMetrics=state.scheduleMeta.globalMetrics||{};
+      const formatTime=(mins)=> Number.isFinite(Number(mins)) ? toHHMM(Number(mins)) : "-";
+      const totalMinutes=Math.max(0, Number(globalMetrics.totalMinutes)||0);
+      const gapMinutes=Math.max(0, Number(globalMetrics.totalGapMinutes)||0);
+      const breakCount=Math.max(0, Number(globalMetrics.breakCount)||0);
+      const gapText = gapMinutes ? `${gapMinutes} min${breakCount ? ` (${breakCount} huecos)` : ""}` : "0 min";
+      const avgLoad = Number.isFinite(Number(globalMetrics.averageLoadMinutes)) && Number(globalMetrics.averageLoadMinutes)>0
+        ? `${Math.round(Number(globalMetrics.averageLoadMinutes))} min`
+        : (totalMinutes>0?"0 min":"-");
+      const globalBox=el("div","schedule-global");
+      globalBox.appendChild(el("div","mini","Resumen general"));
+      const globalTable=el("table","schedule-metrics-table");
+      const gBody=el("tbody");
+      const rows=[
+        ["Staff con turnos", String(Math.max(0, Number(globalMetrics.staffWithSessions)||0))],
+        ["Sesiones totales", String(Math.max(0, Number(globalMetrics.totalSessions)||0))],
+        ["Trabajo total", `${totalMinutes} min`],
+        ["Huecos acumulados", gapText],
+        ["Inicio más temprano", formatTime(globalMetrics.earliestStart)],
+        ["Fin más tardío", formatTime(globalMetrics.latestEnd)],
+        ["Inicio promedio", formatTime(globalMetrics.averageStartMin)],
+        ["Fin promedio", formatTime(globalMetrics.averageEndMin)],
+        ["Carga media", avgLoad]
+      ];
+      rows.forEach(([label,value])=>{
+        const row=el("tr");
+        row.appendChild(el("th",null,label));
+        row.appendChild(el("td",null,value));
+        gBody.appendChild(row);
+      });
+      globalTable.appendChild(gBody);
+      globalBox.appendChild(globalTable);
+      container.appendChild(globalBox);
     }
 
     let activeId=state.scheduleMeta.activeStaffId;
@@ -3515,6 +3705,40 @@
         staffWarnings.forEach(msg=> warnList.appendChild(el("li",null,msg)));
         body.appendChild(warnTitle);
         body.appendChild(warnList);
+      }
+      const metrics=(state.scheduleMeta.metricsByStaff||{})[activeId]||null;
+      if(metrics && state.scheduleMeta.generatedAt){
+        const metricsBox=el("div","schedule-metrics");
+        metricsBox.appendChild(el("div","mini","Resumen del turno"));
+        const metricsTable=el("table","schedule-metrics-table");
+        const mBody=el("tbody");
+        const startTxt=metrics.earliestStart!=null?toHHMM(metrics.earliestStart):"-";
+        const endTxt=metrics.latestEnd!=null?toHHMM(metrics.latestEnd):"-";
+        const activeMinutes=Math.max(0, Number(metrics.totalMinutes)||0);
+        const gapTxt = metrics.gapMinutes
+          ? `${metrics.gapMinutes} min${metrics.breakCount ? ` (${metrics.breakCount} huecos)` : ""}`
+          : "0 min";
+        const rows=[
+          ["Acciones planificadas", String(Math.max(0, Number(metrics.tasksScheduled)||0))],
+          ["Sesiones totales", String(Math.max(0, Number(metrics.sessionCount)||0))],
+          ["Inicio", startTxt],
+          ["Fin", endTxt],
+          ["Trabajo activo", `${activeMinutes} min`],
+          ["Huecos", gapTxt],
+          ["Transportes", String(Math.max(0, Number(metrics.transportSessions)||0))],
+          ["Conflictos de ubicación", String(Math.max(0, Number(metrics.locationIssues)||0))],
+          ["Incumplimientos de ventana", String(Math.max(0, Number(metrics.windowViolations)||0))],
+          ["Conflictos de inicio fijo", String(Math.max(0, Number(metrics.fixedConflicts)||0))]
+        ];
+        rows.forEach(([label,value])=>{
+          const row=el("tr");
+          row.appendChild(el("th",null,label));
+          row.appendChild(el("td",null,value));
+          mBody.appendChild(row);
+        });
+        metricsTable.appendChild(mBody);
+        metricsBox.appendChild(metricsTable);
+        body.appendChild(metricsBox);
       }
     }
     container.appendChild(body);

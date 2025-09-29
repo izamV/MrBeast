@@ -47,6 +47,12 @@
     st.scheduleMeta.warningsByStaff=st.scheduleMeta.warningsByStaff||{};
     st.scheduleMeta.globalWarnings=st.scheduleMeta.globalWarnings||[];
     if(typeof st.scheduleMeta.activeStaffId==="undefined") st.scheduleMeta.activeStaffId=null;
+    st.scheduleMeta.metricsByStaff=st.scheduleMeta.metricsByStaff||{};
+    st.scheduleMeta.globalMetrics=st.scheduleMeta.globalMetrics||{};
+    st.scheduleMeta.parameters=st.scheduleMeta.parameters||{};
+    if(!Number.isFinite(Number(st.scheduleMeta.parameters.earlyStartThreshold))){
+      st.scheduleMeta.parameters.earlyStartThreshold = 7*60;
+    }
     st.project=st.project||{nombre:"Proyecto",fecha:"",tz:"Europe/Madrid",updatedAt:"",view:{}}; st.project.view=st.project.view||{};
     st.project.view.lastTab=st.project.view.lastTab||"CLIENTE"; st.project.view.subGantt=st.project.view.subGantt||"Gantt"; st.project.view.selectedIndex=st.project.view.selectedIndex||{};
     if(!st.sessions.CLIENTE) st.sessions.CLIENTE=[];

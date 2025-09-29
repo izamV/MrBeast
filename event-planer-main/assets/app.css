@@ -305,6 +305,22 @@ table.matlist td.act{width:120px}
 .material-summary-qty{font-weight:600}
 .material-summary-row.pending .material-summary-name{color:#fca5a5}
 .warn-text{color:#fca5a5}
+.schedule-controls{display:flex;flex-wrap:wrap;align-items:center;gap:.75rem;margin-bottom:1rem}
+.schedule-controls .btn{flex:0 0 auto}
+.schedule-params{display:flex;flex-direction:column;gap:.35rem;min-width:220px}
+.schedule-params .mini{color:#94a3b8}
+.schedule-params .input{max-width:140px}
+.schedule-tabs{display:flex;flex-wrap:wrap;gap:.5rem;margin:1rem 0}
+.schedule-body{display:flex;flex-direction:column;gap:1rem}
+.schedule-table{width:100%;border-collapse:collapse;font-size:.85rem}
+.schedule-table th,.schedule-table td{padding:.45rem .6rem;text-align:left;border-bottom:1px solid rgba(148,163,184,.2)}
+.schedule-table th{font-weight:600;color:#94a3b8;font-size:.75rem;text-transform:uppercase;letter-spacing:.05em}
+.schedule-metrics,.schedule-global{margin-top:1rem}
+.schedule-metrics .mini,.schedule-global .mini{font-weight:600;color:#cbd5f5;margin-bottom:.35rem}
+.schedule-metrics-table{width:100%;border-collapse:collapse;font-size:.8rem}
+.schedule-metrics-table th,.schedule-metrics-table td{padding:.3rem .5rem;text-align:left}
+.schedule-metrics-table th{color:#94a3b8;font-weight:600;font-size:.75rem;text-transform:uppercase;letter-spacing:.05em}
+.schedule-metrics-table td{color:#e5e7eb;font-variant-numeric:tabular-nums}
 .material-rows{display:flex;flex-direction:column;gap:.5rem}
 .material-row{position:relative;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:.75rem;align-items:flex-start;background:#0b1220;border:1px solid #1f2937;border-radius:.6rem;padding:1rem;padding-right:3rem}
 .material-field{display:flex;flex-direction:column;gap:.25rem;font-size:.85rem;color:#94a3b8}
