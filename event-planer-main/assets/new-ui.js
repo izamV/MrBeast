@@ -283,24 +283,79 @@
     return roundToFive(mins);
   };
   const defaultPretaskLower = ()=> 0;
-  const defaultPretaskUpper = (rootTask, lower, duration)=>{
-    const latestFromRoot = Number.isFinite(rootTask?.startMin)
-      ? roundToFive(clampToDay(rootTask.startMin - duration))
-      : roundToFive(clampToDay(lower + duration));
-    return Math.max(lower, latestFromRoot);
+  const getTaskParent = (task)=>{
+    if(!task || !task.structureParentId) return null;
+    return getTaskById(task.structureParentId) || null;
+  };
+  const inheritedPretaskLower = (task)=>{
+    const visited=new Set();
+    let current=task;
+    while(current){
+      if(visited.has(current.id)) break;
+      visited.add(current.id);
+      const parent=getTaskParent(current);
+      if(!parent || parent.structureRelation !== "pre") break;
+      if(parent.limitEarlyMinEnabled && Number.isFinite(parent.limitEarlyMin)){
+        return roundToFive(clampToDay(parent.limitEarlyMin));
+      }
+      if(parent.limitLateMinEnabled && Number.isFinite(parent.limitLateMin)){
+        return roundToFive(clampToDay(parent.limitLateMin));
+      }
+      if(Number.isFinite(parent.startMin)){
+        return roundToFive(clampToDay(parent.startMin));
+      }
+      current=parent;
+    }
+    return null;
+  };
+  const pretaskReferenceStart = (task, rootTask)=>{
+    const visited=new Set();
+    let current=task;
+    while(current){
+      if(visited.has(current.id)) break;
+      visited.add(current.id);
+      const parent=getTaskParent(current);
+      if(!parent) break;
+      if(parent.structureRelation === "pre"){
+        if(parent.limitLateMinEnabled && Number.isFinite(parent.limitLateMin)){
+          return roundToFive(clampToDay(parent.limitLateMin));
+        }
+        if(Number.isFinite(parent.startMin)){
+          return roundToFive(clampToDay(parent.startMin));
+        }
+        current=parent;
+        continue;
+      }
+      if(Number.isFinite(parent.startMin)){
+        return roundToFive(clampToDay(parent.startMin));
+      }
+      break;
+    }
+    return Number.isFinite(rootTask?.startMin)
+      ? roundToFive(clampToDay(rootTask.startMin))
+      : null;
+  };
+  const defaultPretaskUpper = (referenceStart, lower, duration)=>{
+    if(Number.isFinite(referenceStart)){
+      const latest=roundToFive(clampToDay(referenceStart - duration));
+      return Math.max(lower, latest);
+    }
+    return Math.max(lower, roundToFive(clampToDay(lower + duration)));
   };
   const ensurePretaskBounds = (task, rootTask)=>{
     if(!task || task.structureRelation !== "pre") return;
     const duration = Math.max(5, roundToFive(Number(task.durationMin)||PRETASK_DEFAULT_DURATION));
     const rangeRequested = !!task.limitEarlyMinEnabled || !!task.limitLateMinEnabled;
+    const inheritedLower = inheritedPretaskLower(task);
+    const minLower = inheritedLower!=null ? inheritedLower : defaultPretaskLower();
     const storedLowerRaw = Number.isFinite(task.limitEarlyMin)
       ? roundToFive(clampToDay(task.limitEarlyMin))
-      : defaultPretaskLower();
-    const minLower = defaultPretaskLower();
-    const computeLatestCap = (baseLower)=> Number.isFinite(rootTask?.startMin)
-      ? Math.max(baseLower, roundToFive(clampToDay(rootTask.startMin - duration)))
+      : minLower;
+    const referenceStart = pretaskReferenceStart(task, rootTask);
+    const computeLatestCap = (baseLower)=> Number.isFinite(referenceStart)
+      ? Math.max(baseLower, roundToFive(clampToDay(referenceStart - duration)))
       : Math.max(baseLower, DAY_MAX_MIN);
-    const defaultUpperFor = (baseLower)=> defaultPretaskUpper(rootTask, baseLower, duration);
+    const defaultUpperFor = (baseLower)=> defaultPretaskUpper(referenceStart, baseLower, duration);
 
     let lower = rangeRequested ? storedLowerRaw : minLower;
     lower = roundToFive(clampToDay(lower));
@@ -1724,11 +1779,13 @@
     const task=createTask({ parentId: parent.id, relation:"pre" });
     task.actionName = "";
     task.durationMin = PRETASK_DEFAULT_DURATION;
-    const lower = defaultPretaskLower();
+    const inheritedLowerBound = inheritedPretaskLower(task);
+    const lower = inheritedLowerBound!=null ? inheritedLowerBound : defaultPretaskLower();
     task.limitEarlyMinEnabled = false;
     task.limitLateMinEnabled = false;
     task.limitEarlyMin = lower;
-    task.limitLateMin = defaultPretaskUpper(rootTask, lower, task.durationMin);
+    const referenceStart = pretaskReferenceStart(task, rootTask);
+    task.limitLateMin = defaultPretaskUpper(referenceStart, lower, task.durationMin);
     ensurePretaskBounds(task, rootTask);
     touchTask(task);
     state.project.view.selectedTaskId = rootTask.id;
@@ -1818,13 +1875,16 @@
 
     const duration=Math.max(5, roundToFive(Number(task.durationMin)||PRETASK_DEFAULT_DURATION));
     const rangeEnabled=!!task.limitEarlyMinEnabled || !!task.limitLateMinEnabled;
-    const storedLower=Number.isFinite(task.limitEarlyMin) ? roundToFive(clampToDay(task.limitEarlyMin)) : defaultPretaskLower();
-    const effectiveLower=rangeEnabled ? storedLower : defaultPretaskLower();
-    const latestCap=Number.isFinite(rootTask?.startMin)
-      ? Math.max(effectiveLower, roundToFive(clampToDay(rootTask.startMin - duration)))
+    const inheritedLowerBound = inheritedPretaskLower(task);
+    const minLower = inheritedLowerBound!=null ? inheritedLowerBound : defaultPretaskLower();
+    const storedLower=Number.isFinite(task.limitEarlyMin) ? roundToFive(clampToDay(task.limitEarlyMin)) : minLower;
+    const effectiveLower=rangeEnabled ? storedLower : minLower;
+    const referenceStart = pretaskReferenceStart(task, rootTask);
+    const latestCap=Number.isFinite(referenceStart)
+      ? Math.max(effectiveLower, roundToFive(clampToDay(referenceStart - duration)))
       : Math.max(effectiveLower, DAY_MAX_MIN);
-    const latestLowerForDuration=Math.max(defaultPretaskLower(), latestCap - duration);
-    const upperDefault=defaultPretaskUpper(rootTask, effectiveLower, duration);
+    const latestLowerForDuration=Math.max(minLower, latestCap - duration);
+    const upperDefault=defaultPretaskUpper(referenceStart, effectiveLower, duration);
     const storedUpper=Number.isFinite(task.limitLateMin) ? roundToFive(clampToDay(task.limitLateMin)) : upperDefault;
     const minUpperForInput=Math.min(latestCap, effectiveLower + duration);
 
@@ -1857,7 +1917,7 @@
     const lowerInput=el("input","input pretask-time-input");
     lowerInput.type="time";
     lowerInput.step="300";
-    lowerInput.min="00:00";
+    lowerInput.min=formatTimeForInput(minLower);
     lowerInput.max=formatTimeForInput(latestLowerForDuration);
     lowerInput.value=formatTimeForInput(storedLower);
     lowerInput.disabled=!rangeEnabled;
