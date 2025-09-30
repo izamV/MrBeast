@@ -3197,7 +3197,8 @@
   const computeLatestForTask = (task, rootTask, duration, earliest)=>{
     const base=Math.max(0, earliest??0);
     if(task.limitLateMinEnabled && Number.isFinite(task.limitLateMin)){
-      return Math.max(base, task.limitLateMin);
+      const limit = Math.max(0, task.limitLateMin);
+      return limit;
     }
     if(task.structureRelation === "pre"){
       if(Number.isFinite(rootTask?.startMin)){
@@ -3319,6 +3320,7 @@
       fixedStart:false,
       earliest:null,
       latest:null,
+      latestLimit:null,
       latestEnd:null,
       sortKey:null
     };
@@ -3326,12 +3328,15 @@
       info.fixedStart=true;
       info.earliest=info.startMin;
       info.latest=info.startMin;
+      info.latestLimit=info.startMin;
     }else{
       const earliestRaw=computeEarliestForTask(task, rootTask, info.duration);
       const latestRaw=computeLatestForTask(task, rootTask, info.duration, earliestRaw);
       info.earliest=normalizeMinute(earliestRaw);
-      info.latest=normalizeMinute(latestRaw);
-      if(info.earliest!=null && info.latest!=null && info.latest<info.earliest){
+      const latestNormalized=normalizeMinute(latestRaw);
+      info.latestLimit=latestNormalized;
+      info.latest=latestNormalized;
+      if(info.earliest!=null && info.latestLimit!=null && info.latestLimit<info.earliest){
         info.latest=info.earliest;
       }
     }
@@ -3407,11 +3412,13 @@
         }
       }
 
-      const latest = info.fixedStart ? info.startMin : info.latest;
+      const latestLimit = info.fixedStart
+        ? info.startMin
+        : (typeof info.latestLimit === "number" ? info.latestLimit : info.latest);
       if(!info.fixedStart){
         plannedStart = Math.max(plannedStart, currentTime);
-        if(latest!=null && plannedStart>latest){
-          warnings.push(`${label}: inicio ${toHHMM(plannedStart)} fuera de la franja (máximo ${toHHMM(latest)}).`);
+        if(latestLimit!=null && plannedStart>latestLimit){
+          warnings.push(`${label}: inicio ${toHHMM(plannedStart)} fuera de la franja (máximo ${toHHMM(latestLimit)}).`);
           stats.windowViolations+=1;
         }
       }
