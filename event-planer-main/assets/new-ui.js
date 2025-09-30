@@ -3168,70 +3168,253 @@
     return { assignmentMap, missingAssignments:missing, globalWarnings:[...warningSet] };
   };
 
-  const computeEarliestForTask = (task, rootTask, duration)=>{
-    if(task.limitEarlyMinEnabled && Number.isFinite(task.limitEarlyMin)){
-      return Math.max(0, task.limitEarlyMin);
+  const computeTaskDuration = (task)=>{
+    const rawDuration = Number(task?.durationMin);
+    if(Number.isFinite(rawDuration) && rawDuration>0){
+      return Math.max(5, roundToFive(rawDuration));
     }
-    if(task.structureRelation === "pre"){
-      if(Number.isFinite(rootTask?.startMin)){
-        return Math.max(0, rootTask.startMin - duration);
-      }
-      return 0;
+    const rawStart = Number(task?.startMin);
+    const rawEnd = Number(task?.endMin);
+    if(Number.isFinite(rawStart) && Number.isFinite(rawEnd)){
+      return Math.max(5, roundToFive(rawEnd - rawStart));
     }
-    if(task.structureRelation === "parallel"){
-      if(Number.isFinite(rootTask?.startMin)) return rootTask.startMin;
-      return defaultTimelineStart();
-    }
-    if(task.structureRelation === "post"){
-      if(Number.isFinite(rootTask?.endMin)) return rootTask.endMin;
-      if(Number.isFinite(rootTask?.startMin) && Number.isFinite(rootTask?.durationMin)){
-        const rootEnd = rootTask.startMin + Math.max(5, Number(rootTask.durationMin)||duration);
-        return rootEnd;
-      }
-      return defaultTimelineStart();
-    }
-    if(Number.isFinite(task.startMin)) return task.startMin;
-    return defaultTimelineStart();
+    return 60;
   };
 
-  const computeLatestForTask = (task, rootTask, duration, earliest)=>{
-    const base=Math.max(0, earliest??0);
-    if(task.limitLateMinEnabled && Number.isFinite(task.limitLateMin)){
-      const limit = Math.max(0, task.limitLateMin);
-      return limit;
+  const buildTaskWindowsForRoot = (rootTask, tasks)=>{
+    const windows=new Map();
+    const conflicts=[];
+    if(!rootTask) return {windows, conflicts};
+    const rootStart=normalizeMinute(rootTask.startMin);
+    if(rootStart==null){
+      conflicts.push(`${labelForTask(rootTask)}: falta hora fija para el hito principal.`);
+      return {windows, conflicts};
     }
-    if(task.structureRelation === "pre"){
-      if(Number.isFinite(rootTask?.startMin)){
-        return Math.max(base, rootTask.startMin - Math.max(5, duration));
+    const rootDuration=computeTaskDuration(rootTask);
+    const rawRootEnd=Number.isFinite(rootTask.endMin)?normalizeMinute(rootTask.endMin):null;
+    const rootEnd = rawRootEnd!=null ? rawRootEnd : normalizeMinute(rootStart + rootDuration);
+    const horizon = DAY_MAX_MIN;
+    const nodeById=new Map();
+
+    const ensureNode = (task)=>{
+      const id=task.id;
+      if(nodeById.has(id)) return nodeById.get(id);
+      const relation=task.structureRelation||"milestone";
+      const duration=computeTaskDuration(task);
+      const fixedStart=Number.isFinite(task.startMin)?normalizeMinute(task.startMin):null;
+      const fixedEnd=Number.isFinite(task.endMin)?normalizeMinute(task.endMin)
+        : (fixedStart!=null ? normalizeMinute(fixedStart + duration) : null);
+      const node={
+        id,
+        task,
+        relation,
+        duration,
+        fixedStart,
+        fixedEnd,
+        release:null,
+        deadlineStart:null,
+        deadlineEnd:null,
+        successors:[],
+        predecessors:[],
+        rootStart,
+        rootEnd,
+        horizon
+      };
+      if(relation === "milestone"){
+        node.release = rootStart;
+        node.deadlineEnd = fixedEnd!=null ? fixedEnd : (rootEnd!=null ? rootEnd : normalizeMinute(rootStart + duration));
+        node.fixedStart = rootStart;
+      }else if(relation === "pre"){
+        if(task.limitEarlyMinEnabled && Number.isFinite(task.limitEarlyMin)){
+          node.release = normalizeMinute(task.limitEarlyMin);
+        }
+        if(node.release==null) node.release = 0;
+        if(task.limitLateMinEnabled && Number.isFinite(task.limitLateMin)){
+          node.deadlineStart = normalizeMinute(task.limitLateMin);
+        }
+      }else if(relation === "parallel"){
+        const lower=task.limitEarlyMinEnabled && Number.isFinite(task.limitEarlyMin)
+          ? normalizeMinute(task.limitEarlyMin)
+          : null;
+        const baseStart = rootStart!=null ? rootStart : defaultTimelineStart();
+        node.release = lower!=null ? Math.max(baseStart, lower) : baseStart;
+        if(task.limitLateMinEnabled && Number.isFinite(task.limitLateMin)){
+          node.deadlineStart = normalizeMinute(task.limitLateMin);
+        }
+        if(rootEnd!=null) node.deadlineEnd = rootEnd;
+      }else if(relation === "post"){
+        const lower=task.limitEarlyMinEnabled && Number.isFinite(task.limitEarlyMin)
+          ? normalizeMinute(task.limitEarlyMin)
+          : null;
+        const base = rootEnd!=null ? rootEnd : normalizeMinute(rootStart + rootDuration);
+        node.release = lower!=null ? Math.max(base, lower) : base;
+        const chainDeadline = task.limitLateMinEnabled && Number.isFinite(task.limitLateMin)
+          ? normalizeMinute(task.limitLateMin)
+          : horizon;
+        node.deadlineEnd = Math.min(chainDeadline, horizon);
       }
-      return base;
-    }
-    if(task.structureRelation === "parallel"){
-      if(Number.isFinite(rootTask?.endMin)){
-        return Math.max(base, rootTask.endMin - duration);
+      if(node.fixedStart!=null){
+        node.release = node.fixedStart;
+        if(node.relation === "post"){
+          node.deadlineEnd = node.fixedEnd!=null ? node.fixedEnd : normalizeMinute(node.fixedStart + duration);
+        }else{
+          node.deadlineStart = node.fixedStart;
+        }
       }
-      if(Number.isFinite(rootTask?.startMin)) return Math.max(base, rootTask.startMin);
-      return base;
+      nodeById.set(id, node);
+      return node;
+    };
+
+    tasks.forEach(task=> ensureNode(task));
+    ensureNode(rootTask);
+
+    const addSuccessor = (fromId, toId)=>{
+      if(!fromId || !toId) return;
+      const from=nodeById.get(fromId);
+      const to=nodeById.get(toId);
+      if(!from || !to) return;
+      if(!from.successors.includes(toId)) from.successors.push(toId);
+      if(!to.predecessors.includes(fromId)) to.predecessors.push(fromId);
+    };
+
+    tasks.forEach(task=>{
+      const parentId=task.structureParentId||null;
+      if(task.structureRelation === "pre"){
+        const successorId = nodeById.has(parentId) ? parentId : rootTask.id;
+        addSuccessor(task.id, successorId);
+      }else if(task.structureRelation === "post"){
+        const predecessorId = nodeById.has(parentId) ? parentId : rootTask.id;
+        addSuccessor(predecessorId, task.id);
+      }
+    });
+
+    const order=[];
+    const inDegree=new Map();
+    nodeById.forEach(node=> inDegree.set(node.id, node.predecessors.length));
+    const queue=[];
+    nodeById.forEach(node=>{ if((inDegree.get(node.id)||0)===0) queue.push(node.id); });
+    while(queue.length){
+      const currentId=queue.shift();
+      const node=nodeById.get(currentId);
+      if(!node) continue;
+      order.push(node);
+      node.successors.forEach(succId=>{
+        const deg=(inDegree.get(succId)||0)-1;
+        inDegree.set(succId, deg);
+        if(deg===0) queue.push(succId);
+      });
     }
-    if(task.structureRelation === "post"){
-      if(Number.isFinite(rootTask?.endMin)) return Math.max(base, rootTask.endMin);
-      return base;
+    if(order.length!==nodeById.size){
+      conflicts.push(`${labelForTask(rootTask)}: se detectó un ciclo en las dependencias de tareas.`);
+      return {windows, conflicts};
     }
-    return Number.isFinite(task.startMin) ? task.startMin : base;
+
+    const earliestMap=new Map();
+    nodeById.forEach(node=>{
+      const base=node.release!=null ? node.release : 0;
+      const start=node.fixedStart!=null ? node.fixedStart : base;
+      earliestMap.set(node.id, start);
+    });
+    order.forEach(node=>{
+      const base=node.release!=null ? node.release : 0;
+      const currentStart=node.fixedStart!=null ? node.fixedStart : Math.max(base, earliestMap.get(node.id)??base);
+      const end=currentStart + node.duration;
+      node.successors.forEach(succId=>{
+        const prev=earliestMap.get(succId);
+        const cand=Math.max(prev!=null?prev:Number.NEGATIVE_INFINITY, end);
+        earliestMap.set(succId, cand);
+      });
+    });
+
+    nodeById.forEach(node=>{
+      if(node.fixedStart!=null){
+        const required=Math.max(node.release!=null?node.release:0, earliestMap.get(node.id)??node.fixedStart);
+        if(required>node.fixedStart){
+          conflicts.push(`${labelForTask(node.task)}: inicio fijo ${toHHMM(node.fixedStart)} incompatible con dependencias (≥ ${toHHMM(required)}).`);
+        }
+      }
+    });
+
+    const latestMap=new Map();
+    const reversed=order.slice().reverse();
+    reversed.forEach(node=>{
+      if(node.fixedStart!=null){
+        latestMap.set(node.id, node.fixedStart);
+        return;
+      }
+      let candidate=Number.POSITIVE_INFINITY;
+      node.successors.forEach(succId=>{
+        const succStart=latestMap.get(succId);
+        if(succStart!=null){
+          candidate=Math.min(candidate, succStart - node.duration);
+        }
+      });
+      if(node.deadlineStart!=null){
+        candidate=Math.min(candidate, node.deadlineStart);
+      }
+      if(node.deadlineEnd!=null){
+        candidate=Math.min(candidate, node.deadlineEnd - node.duration);
+      }
+      if(!Number.isFinite(candidate)){
+        if(node.relation === "pre"){
+          const parentId=node.successors[0];
+          const parentStart=parentId ? latestMap.get(parentId) : null;
+          if(parentStart!=null) candidate=parentStart - node.duration;
+          else candidate=(node.deadlineStart!=null ? node.deadlineStart : node.rootStart) - node.duration;
+        }else if(node.relation === "post"){
+          const limit=node.deadlineEnd!=null ? node.deadlineEnd : node.horizon;
+          candidate=limit - node.duration;
+        }else if(node.relation === "parallel"){
+          const limit=node.deadlineEnd!=null ? node.deadlineEnd : (node.rootEnd!=null ? node.rootEnd : node.rootStart + node.duration);
+          candidate=limit - node.duration;
+        }else{
+          candidate=node.rootStart;
+        }
+      }
+      const earliestStart=Math.max(node.release!=null ? node.release : 0, earliestMap.get(node.id)??(node.release!=null?node.release:0));
+      let startValue=candidate;
+      if(!Number.isFinite(startValue)) startValue=earliestStart;
+      if(startValue<earliestStart){
+        conflicts.push(`${labelForTask(node.task)}: la cadena de dependencias no cabe en la ventana disponible.`);
+        startValue=earliestStart;
+      }
+      latestMap.set(node.id, roundToFive(Math.max(0, startValue)));
+    });
+
+    nodeById.forEach(node=>{
+      const earliestStart=Math.max(node.release!=null ? node.release : 0, earliestMap.get(node.id)??(node.release!=null?node.release:0));
+      const latestStart=node.fixedStart!=null ? node.fixedStart : latestMap.get(node.id);
+      const startVal=roundToFive(Math.max(0, earliestStart));
+      const latestVal=roundToFive(Math.max(startVal, latestStart!=null?latestStart:startVal));
+      const latestEnd=roundToFive(latestVal + node.duration);
+      windows.set(node.id, {
+        earliest:startVal,
+        latest:latestVal,
+        latestEnd,
+        fixedStart:node.fixedStart,
+        release:node.release
+      });
+    });
+    return {windows, conflicts};
   };
 
-  const computeLatestEndForTask = (task, info, rootTask)=>{
-    if(task.limitLateMinEnabled && Number.isFinite(task.limitLateMin)){
-      if(task.structureRelation === "post"){
-        return normalizeMinute(task.limitLateMin);
-      }
-      return normalizeMinute(task.limitLateMin + info.duration);
-    }
-    if(task.structureRelation === "post" && Number.isFinite(rootTask?.endMin)){
-      return normalizeMinute(rootTask.endMin + info.duration);
-    }
-    if(info.fixedStart && info.endMin!=null) return info.endMin;
-    return null;
+  const computeTaskWindows = (tasks)=>{
+    const windows=new Map();
+    const conflicts=[];
+    const byRoot=new Map();
+    tasks.forEach(task=>{
+      const root=rootTaskFor(task);
+      if(!root) return;
+      if(!byRoot.has(root.id)) byRoot.set(root.id, []);
+      byRoot.get(root.id).push(task);
+    });
+    byRoot.forEach((group, rootId)=>{
+      const root=group.find(t=>t.id===rootId) || group.find(t=>!t.structureParentId && t.structureRelation==="milestone") || null;
+      const {windows:winMap, conflicts:rootConflicts} = buildTaskWindowsForRoot(root, group);
+      rootConflicts.forEach(msg=>conflicts.push(msg));
+      winMap.forEach((value,key)=> windows.set(key, value));
+    });
+    return {windows, conflicts};
   };
 
   const nextScheduleSessionId = ()=>{
@@ -3294,24 +3477,13 @@
     return session;
   };
 
-  const computeScheduleInfo = (task, rootTask, orderMap)=>{
-    const computeDuration = ()=>{
-      const rawDuration = Number(task.durationMin);
-      if(Number.isFinite(rawDuration)) return Math.max(5, Math.round(rawDuration));
-      const rawStart = Number(task.startMin);
-      const rawEnd = Number(task.endMin);
-      if(Number.isFinite(rawStart) && Number.isFinite(rawEnd)){
-        return Math.max(5, Math.round(rawEnd - rawStart));
-      }
-      return 60;
-    };
-    const baseDuration = computeDuration();
-    const normalizedDuration = normalizeMinute(baseDuration);
+  const computeScheduleInfo = (task, rootTask, orderMap, windows)=>{
+    const duration = normalizeMinute(computeTaskDuration(task));
     const info={
       task,
       label:labelForTask(task),
       relation:task.structureRelation||"milestone",
-      duration: normalizedDuration ?? baseDuration,
+      duration: duration ?? computeTaskDuration(task),
       order:orderMap.get(task.id)||0,
       locationId: task.locationApplies===false ? null : (task.locationId||null),
       locationRequired: task.locationApplies!==false,
@@ -3329,22 +3501,55 @@
       info.earliest=info.startMin;
       info.latest=info.startMin;
       info.latestLimit=info.startMin;
-    }else{
-      const earliestRaw=computeEarliestForTask(task, rootTask, info.duration);
-      const latestRaw=computeLatestForTask(task, rootTask, info.duration, earliestRaw);
-      info.earliest=normalizeMinute(earliestRaw);
-      const latestNormalized=normalizeMinute(latestRaw);
-      info.latestLimit=latestNormalized;
-      info.latest=latestNormalized;
-      if(info.earliest!=null && info.latestLimit!=null && info.latestLimit<info.earliest){
-        info.latest=info.earliest;
+    }
+    const window=windows?.get(task.id)||null;
+    if(window){
+      if(window.fixedStart!=null){
+        info.fixedStart=true;
+        info.startMin=window.fixedStart;
+        info.endMin=window.latestEnd!=null ? window.latestEnd : normalizeMinute(window.fixedStart + info.duration);
+        info.earliest=window.fixedStart;
+        info.latest=window.fixedStart;
+        info.latestLimit=window.fixedStart;
+      }else{
+        if(window.earliest!=null){
+          info.earliest=window.earliest;
+        }
+        if(window.latest!=null){
+          info.latest=window.latest;
+          info.latestLimit=window.latest;
+        }
+        if(window.latestEnd!=null){
+          info.latestEnd=window.latestEnd;
+        }
+      }
+      if(!info.fixedStart && info.endMin==null && info.latest!=null){
+        info.endMin = normalizeMinute(info.latest + info.duration);
+      }
+      if(!info.fixedStart && info.earliest==null && window.release!=null){
+        info.earliest = window.release;
+      }
+    }
+    if(!info.fixedStart){
+      if(info.earliest==null) info.earliest = window?.release ?? defaultTimelineStart();
+      if(info.latest==null) info.latest = info.latestLimit!=null ? info.latestLimit : info.earliest;
+      if(info.latestLimit==null) info.latestLimit = info.latest;
+      if(info.latestEnd==null && info.latest!=null){
+        info.latestEnd = normalizeMinute(info.latest + info.duration);
       }
     }
     if(info.fixedStart && info.endMin==null){
       info.endMin = normalizeMinute((info.startMin||0)+info.duration);
     }
-    info.latestEnd = computeLatestEndForTask(task, info, rootTask);
-    info.sortKey = info.fixedStart ? (info.startMin ?? Infinity) : (info.earliest ?? Infinity);
+    if(info.latestEnd==null && info.latest!=null){
+      info.latestEnd = normalizeMinute(info.latest + info.duration);
+    }
+    if(info.earliest!=null && info.latest!=null && info.latest<info.earliest){
+      info.latest = info.earliest;
+      info.latestLimit = info.earliest;
+      info.latestEnd = normalizeMinute(info.latest + info.duration);
+    }
+    info.sortKey = info.fixedStart ? (info.startMin ?? Infinity) : (info.latest ?? info.earliest ?? Infinity);
     return info;
   };
 
@@ -3363,21 +3568,57 @@
       transportSessions:0,
       locationIssues:0,
       windowViolations:0,
-      fixedConflicts:0
+      fixedConflicts:0,
+      unscheduled:0
     };
     if(!items.length) return {sessions, warnings, stats};
-    items.sort((a,b)=>{
-      const sk=(a.sortKey??Infinity)-(b.sortKey??Infinity);
-      if(sk!==0) return sk;
-      const rel=(RELATION_ORDER[a.relation]||0)-(RELATION_ORDER[b.relation]||0);
-      if(rel!==0) return rel;
-      const ord=(a.order||0)-(b.order||0);
-      if(ord!==0) return ord;
+
+    const scheduled=[];
+    const takenIntervals=[];
+
+    const sortByLatestDesc = (a, b)=>{
+      const latestA = a.fixedStart
+        ? (a.startMin ?? a.latest ?? a.earliest ?? 0)
+        : (a.latest ?? a.latestLimit ?? a.earliest ?? 0);
+      const latestB = b.fixedStart
+        ? (b.startMin ?? b.latest ?? b.earliest ?? 0)
+        : (b.latest ?? b.latestLimit ?? b.earliest ?? 0);
+      if(latestA!==latestB) return (latestB||0) - (latestA||0);
+      const relDiff=(RELATION_ORDER[b.relation]||0)-(RELATION_ORDER[a.relation]||0);
+      if(relDiff!==0) return relDiff;
+      const orderDiff=(b.order||0)-(a.order||0);
+      if(orderDiff!==0) return orderDiff;
       return a.label.localeCompare(b.label);
-    });
-    let currentTime=null;
-    let lastLocation=null;
-    items.forEach(info=>{
+    };
+
+    const findLatestSlot = (intervals, release, latest, duration)=>{
+      const safeRelease = Number.isFinite(release) ? release : 0;
+      let safeLatest = Number.isFinite(latest) ? latest : safeRelease;
+      if(safeLatest<safeRelease) safeLatest = safeRelease;
+      const sortedIntervals = intervals.slice().sort((a,b)=>a.start-b.start);
+      let nextStart = safeLatest;
+      for(let idx=sortedIntervals.length-1; idx>=-1; idx-=1){
+        const interval = idx>=0 ? sortedIntervals[idx] : null;
+        const gapStart = interval ? Math.max(safeRelease, interval.end) : safeRelease;
+        if(nextStart - duration >= gapStart){
+          const candidateStart = nextStart - duration;
+          if(candidateStart>=gapStart){
+            return {start:candidateStart, end:candidateStart + duration};
+          }
+          if(gapStart + duration <= nextStart){
+            return {start:gapStart, end:gapStart + duration};
+          }
+        }
+        if(interval){
+          nextStart = Math.min(nextStart, interval.start);
+          if(nextStart<=safeRelease) break;
+        }
+      }
+      return null;
+    };
+
+    const orderedItems = items.slice().sort(sortByLatestDesc);
+    orderedItems.forEach(info=>{
       const task=info.task;
       const label=info.label;
       const duration=Math.max(5, Number(info.duration)||5);
@@ -3385,61 +3626,71 @@
         warnings.push(`${label}: falta localización.`);
         stats.locationIssues+=1;
       }
-      let earliest = info.fixedStart ? (info.startMin ?? info.earliest ?? 0) : (info.earliest ?? 0);
-      if(!Number.isFinite(earliest)) earliest = 0;
-      earliest = normalizeMinute(earliest) ?? 0;
-      if(currentTime==null) currentTime = earliest;
-      let plannedStart = info.fixedStart ? (info.startMin ?? earliest) : Math.max(earliest, currentTime);
-      if(info.fixedStart && info.startMin!=null && currentTime>info.startMin){
-        warnings.push(`${label}: inicio fijo ${toHHMM(info.startMin)} solapa con tareas previas.`);
-        stats.fixedConflicts+=1;
-        plannedStart = currentTime;
-      }
-
-      if(lastLocation && info.locationId && info.locationId!==lastLocation && task.actionType!==ACTION_TYPE_TRANSPORT){
-        const travelStart = Math.max(currentTime, plannedStart - TRANSPORT_GAP_MINUTES);
-        const travelEnd = travelStart + TRANSPORT_GAP_MINUTES;
-        const transport=makeTransportSession(lastLocation, info.locationId, travelStart, travelEnd);
-        if(transport){
-          sessions.push(transport);
-          stats.transportSessions+=1;
-          currentTime = transport.endMin;
-          plannedStart = Math.max(plannedStart, transport.endMin);
-        }
-        if(info.fixedStart && info.startMin!=null && plannedStart>info.startMin){
-          warnings.push(`${label}: el transporte retrasa el inicio fijado (${toHHMM(info.startMin)}).`);
-          stats.fixedConflicts+=1;
-        }
-      }
-
-      const latestLimit = info.fixedStart
-        ? info.startMin
-        : (typeof info.latestLimit === "number" ? info.latestLimit : info.latest);
-      if(!info.fixedStart){
-        plannedStart = Math.max(plannedStart, currentTime);
-        if(latestLimit!=null && plannedStart>latestLimit){
-          warnings.push(`${label}: inicio ${toHHMM(plannedStart)} fuera de la franja (máximo ${toHHMM(latestLimit)}).`);
-          stats.windowViolations+=1;
-        }
-      }
-
-      const start = normalizeMinute(plannedStart) ?? plannedStart;
-      const end = normalizeMinute(start + duration);
-      if(end<=start){
-        warnings.push(`${label}: duración incompatible tras los ajustes.`);
-        currentTime = end;
+      const earliestRaw = info.fixedStart
+        ? (info.startMin ?? info.earliest ?? 0)
+        : (info.earliest ?? 0);
+      const latestRaw = info.fixedStart
+        ? (info.startMin ?? info.latest ?? info.earliest ?? earliestRaw)
+        : (info.latest ?? info.latestLimit ?? null);
+      let release = normalizeMinute(earliestRaw);
+      if(release==null) release = Math.max(0, Math.round(earliestRaw)||0);
+      let latest = latestRaw!=null ? normalizeMinute(latestRaw) : null;
+      if(latest==null) latest = release;
+      if(latest<release){
         stats.windowViolations+=1;
+        warnings.push(`${label}: ventana invertida (${toHHMM(release)} > ${toHHMM(latest)}), se ajusta al inicio permitido.`);
+        latest = release;
+      }
+
+      const slot = findLatestSlot(takenIntervals, release, latest, duration);
+      if(!slot){
+        warnings.push(`${label}: sin hueco disponible entre ${toHHMM(release)} y ${toHHMM(latest)}.`);
+        stats.windowViolations+=1;
+        if(info.fixedStart) stats.fixedConflicts+=1;
+        stats.unscheduled+=1;
         return;
       }
-      if(info.latestEnd!=null && end>info.latestEnd){
-        warnings.push(`${label}: final ${toHHMM(end)} supera el límite (${toHHMM(info.latestEnd)}).`);
-        stats.windowViolations+=1;
+      const {start, end} = slot;
+      takenIntervals.push({start, end, info});
+      scheduled.push({info, start, end});
+    });
+
+    scheduled.sort((a,b)=>a.start-b.start);
+    stats.tasksScheduled = scheduled.length;
+
+    let previous=null;
+    scheduled.forEach(entry=>{
+      const {info,start,end}=entry;
+      const task=info.task;
+      if(previous){
+        const prevInfo=previous.info;
+        if(prevInfo.locationId && info.locationId && prevInfo.locationId!==info.locationId){
+          const availableGap = start - previous.end;
+          if(availableGap>0){
+            const travelDuration = Math.min(TRANSPORT_GAP_MINUTES, availableGap);
+            if(travelDuration<TRANSPORT_GAP_MINUTES){
+              warnings.push(`${prevInfo.label} → ${info.label}: se reserva solo ${travelDuration} min para transporte.`);
+              stats.windowViolations+=1;
+            }
+            const transportStart = start - travelDuration;
+            const transportEnd = start;
+            if(travelDuration>0){
+              const transport=makeTransportSession(prevInfo.locationId, info.locationId, transportStart, transportEnd);
+              if(transport){
+                sessions.push(transport);
+                stats.transportSessions+=1;
+              }
+            }
+          }else{
+            warnings.push(`${prevInfo.label} → ${info.label}: sin espacio para transporte entre localizaciones.`);
+            stats.windowViolations+=1;
+          }
+        }
       }
       sessions.push(makeTaskSession(task, start, end));
-      stats.tasksScheduled+=1;
-      currentTime = end;
-      if(info.locationId) lastLocation = info.locationId;
+      previous={info,start,end};
     });
+
     sessions.sort((a,b)=> (a.startMin||0)-(b.startMin||0));
     stats.sessionCount = sessions.length;
     let prevEnd=null;
@@ -3449,8 +3700,8 @@
       if(start==null || end==null) return;
       if(stats.earliestStart==null || start<stats.earliestStart) stats.earliestStart=start;
       if(stats.latestEnd==null || end>stats.latestEnd) stats.latestEnd=end;
-      const duration=Math.max(0, end-start);
-      stats.totalMinutes+=duration;
+      const dur=Math.max(0, end-start);
+      stats.totalMinutes+=dur;
       if(prevEnd!=null){
         if(start>prevEnd){
           stats.breakCount+=1;
@@ -3484,6 +3735,7 @@
     const warnings=preview?.warnings||[];
     const hasSessionPenalty = sessions.length ? 0 : 1;
     const windowViolations = Number(stats.windowViolations)||0;
+    const unscheduled = Number(stats.unscheduled)||0;
     const fixedConflicts = Number(stats.fixedConflicts)||0;
     const warningCount = warnings.length;
     const gapMinutes = Number(stats.gapMinutes)||0;
@@ -3496,6 +3748,7 @@
     return [
       hasSessionPenalty,
       windowViolations,
+      unscheduled,
       fixedConflicts,
       warningCount,
       gapMinutes,
@@ -3532,7 +3785,8 @@
       latestEnd:null,
       averageStartMin:null,
       averageEndMin:null,
-      averageLoadMinutes:0
+      averageLoadMinutes:0,
+      unscheduledTotal:0
     };
     const startValues=[];
     const endValues=[];
@@ -3543,6 +3797,7 @@
       summary.totalMinutes += Number(stats.totalMinutes)||0;
       summary.totalGapMinutes += Number(stats.gapMinutes)||0;
       summary.breakCount += Number(stats.breakCount)||0;
+      summary.unscheduledTotal += Number(stats.unscheduled)||0;
       if(stats.earliestStart!=null){
         summary.staffWithSessions+=1;
         startValues.push(stats.earliestStart);
@@ -3593,13 +3848,14 @@
       return {ok:false,msg:"No hay staff disponible para todas las tareas."};
     }
 
+    const { windows:timeWindows, conflicts:windowConflicts } = computeTaskWindows(tasks);
     const orderMap=hierarchyOrder();
     const itemsByStaff=new Map();
     staffList.forEach(st=>itemsByStaff.set(st.id, []));
     const infoByTask=new Map();
     tasks.forEach(task=>{
       const root=rootTaskFor(task);
-      infoByTask.set(task.id, computeScheduleInfo(task, root, orderMap));
+      infoByTask.set(task.id, computeScheduleInfo(task, root, orderMap, timeWindows));
     });
 
     const sortedTasks=tasks.slice().sort((a,b)=>{
@@ -3696,7 +3952,8 @@
     }
 
     const params=getScheduleParameters();
-    const globalWarningSet=new Set(initialGlobalWarnings);
+    const baseWarnings=[...initialGlobalWarnings, ...(windowConflicts||[])];
+    const globalWarningSet=new Set(baseWarnings);
     staffList.forEach(st=>{
       const stats=metricsByStaff[st.id]||{};
       if(params.earlyStartThreshold!=null && stats.earliestStart!=null && stats.earliestStart<params.earlyStartThreshold){
@@ -3832,7 +4089,8 @@
         ["Fin más tardío", formatTime(globalMetrics.latestEnd)],
         ["Inicio promedio", formatTime(globalMetrics.averageStartMin)],
         ["Fin promedio", formatTime(globalMetrics.averageEndMin)],
-        ["Carga media", avgLoad]
+        ["Carga media", avgLoad],
+        ["Tareas sin asignar", String(Math.max(0, Number(globalMetrics.unscheduledTotal)||0))]
       ];
       rows.forEach(([label,value])=>{
         const row=el("tr");
@@ -3934,7 +4192,8 @@
           ["Transportes", String(Math.max(0, Number(metrics.transportSessions)||0))],
           ["Conflictos de ubicación", String(Math.max(0, Number(metrics.locationIssues)||0))],
           ["Incumplimientos de ventana", String(Math.max(0, Number(metrics.windowViolations)||0))],
-          ["Conflictos de inicio fijo", String(Math.max(0, Number(metrics.fixedConflicts)||0))]
+          ["Conflictos de inicio fijo", String(Math.max(0, Number(metrics.fixedConflicts)||0))],
+          ["Tareas sin hueco", String(Math.max(0, Number(metrics.unscheduled)||0))]
         ];
         rows.forEach(([label,value])=>{
           const row=el("tr");
