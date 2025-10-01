@@ -25,6 +25,7 @@
   if(!root.state){
     root.state = {
       project:{ nombre:"Proyecto", fecha:"", tz:"Europe/Madrid", updatedAt:"", view:{ lastTab:"CLIENTE", subGantt:"Gantt", selectedIndex:{} } },
+      integrations:{ googleMaps:{ apiKey:"" } },
       locations:[
         { id:"L_STAGE", nombre:"Escenario principal", lat:"41.3870", lng:"2.1701" },
         { id:"L_STORAGE", nombre:"Almacén central", lat:"41.3865", lng:"2.1698" },
