@@ -17,12 +17,14 @@ Asignar todas las tareas respetando ventanas de ejecución, duración, ubicació
 ### 1. Consolidación de Datos
 - Construir un agregador que recoja todas las tareas relacionadas con cada cliente.
 - Normalizar cada tarea con campos como `id`, `tipo`, `cliente`, `miembroPreasignado`, `ventanaInicio`, `ventanaFin`, `duracion`, `ubicacion`, `dependencias`, `prioridad`, `flexibilidad` y `estado`.
+- Incorporar la generación automática de una **franja predefinida** por tarea vinculada (pre, post o concurrente) para limitar las selecciones manuales. Esta franja nace a partir de una ventana global `01:00-23:59` y se acota con: (a) la hora de inicio o fin de la tarea principal según corresponda, (b) la suma de las duraciones de las tareas dependientes en niveles previos y (c) la propia duración de la tarea actual. Por ejemplo, para una pretarea de nivel 3 cuya tarea principal va de 13:00 a 14:00, con pretareas de nivel 1 y 2 de 30 y 40 minutos respectivamente y duración propia de 50 minutos, la franja resultante será `01:00-11:00`. La pretarea de nivel 2 en ese escenario tendrá franja `01:00-11:50`. Para post tareas se utiliza la hora de finalización de la tarea principal como punto de partida hacia `23:59`, mientras que las tareas concurrentes heredan el inicio de la tarea principal y se extienden hasta `23:59`.
 - Validar previamente que las ventanas y duraciones sean coherentes y que las ubicaciones existan en el catálogo.
 
 ### 2. Inicialización de Horarios
 - Crear contenedores de horario por miembro del staff.
 - Insertar bloques fijos para tareas preasignadas manualmente y marcarlas como no modificables.
 - Registrar los segmentos libres restantes para futuras asignaciones.
+- Guardar en cada tarea vinculada los límites de su franja predefinida para permitir selecciones manuales dentro de ese rango (por ejemplo, si la ventana resultante es `01:00-12:00`, se admitirá elegir `02:00-11:00` pero no `02:00-12:01`).
 
 ### 3. Algoritmo de Asignación y Optimización
 - Ordenar inicialmente las tareas por criterios como fecha límite, duración, prioridad y flexibilidad.
