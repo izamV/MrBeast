@@ -3081,6 +3081,7 @@
     if(typeof state.scheduleMeta.activeStaffId === "undefined") state.scheduleMeta.activeStaffId = null;
     state.scheduleMeta.metricsByStaff = state.scheduleMeta.metricsByStaff || {};
     state.scheduleMeta.globalMetrics = state.scheduleMeta.globalMetrics || {};
+    if(typeof state.scheduleMeta.lastMethod === "undefined") state.scheduleMeta.lastMethod = null;
     state.scheduleMeta.parameters = state.scheduleMeta.parameters || {};
     const params = state.scheduleMeta.parameters;
     const rawThreshold = Number(params.earlyStartThreshold);
@@ -3103,6 +3104,350 @@
     return {
       earlyStartThreshold: early ?? DEFAULT_EARLY_START_THRESHOLD
     };
+  };
+
+  const SCHEDULE_AI_MODEL = "gpt-4o-mini";
+  const SCHEDULE_AI_RESPONSE_FORMAT = { type: "json_object" };
+  const SCHEDULE_AI_STORAGE_KEY = "eventplan.openai.key";
+  const SCHEDULE_AI_SYSTEM_PROMPT = `Eres un planificador de eventos. Recibirás un objeto JSON con el proyecto, el staff, las localizaciones y todas las tareas bloqueadas de un cliente. Debes proponer el horario de cada miembro del equipo devolviendo únicamente un JSON con el formato {"staff":[{"staffId":"ID_DEL_STAFF","sessions":[{"taskId":"ID_DE_TAREA","start":"HH:MM","end":"HH:MM"}]}],"warnings":[]}. Usa horas en formato 24h HH:MM, respeta los identificadores originales y no inventes tareas nuevas. Si una tarea no puede programarse incluye una advertencia en el array warnings o en warnings del miembro correspondiente.`;
+
+  const scheduleAiTimeToMinutes = (value)=>{
+    if(value==null || value==="") return null;
+    if(Number.isFinite(value)) return normalizeMinute(Number(value));
+    const str = String(value).trim();
+    if(!str) return null;
+    const numeric = Number(str);
+    if(Number.isFinite(numeric)) return normalizeMinute(numeric);
+    const match = str.match(/^(\d{1,2})(?::(\d{1,2}))?(?::(\d{1,2}))?$/);
+    if(!match) return null;
+    const hour = Number(match[1]||0);
+    const minute = Number(match[2]||0);
+    const second = Number(match[3]||0);
+    if(!Number.isFinite(hour) || hour<0 || hour>23) return null;
+    if(!Number.isFinite(minute) || minute<0 || minute>59) return null;
+    if(!Number.isFinite(second) || second<0 || second>59) return null;
+    const total = hour*60 + minute + Math.round(second/60);
+    return normalizeMinute(total);
+  };
+
+  const collectScheduleAiPayload = ()=>{
+    const tasks=getTaskList();
+    const staffList=(state.staff||[]);
+    const params=getScheduleParameters();
+    const staffById=new Map(staffList.map(st=>[st.id, st]));
+    const taskPayload=tasks.map(task=>{
+      const breadcrumb=getBreadcrumb(task).map(step=>({
+        id:step.id,
+        nombre:step.actionName||step.nombre||step.id,
+        tipo:step.structureRelation||"milestone"
+      }));
+      const assigned=(task.assignedStaffIds||[]).map(id=>{
+        const st=staffById.get(id);
+        return st?{id:st.id,nombre:st.nombre||st.id}:{id,nombre:id};
+      });
+      const location = task.locationId ? {
+        id:task.locationId,
+        nombre:locationNameById(task.locationId)||task.locationId
+      } : null;
+      return {
+        id:task.id,
+        nombre:task.actionName||labelForTask(task),
+        tipo:task.structureRelation||"milestone",
+        tipoAccion:task.actionType||ACTION_TYPE_NORMAL,
+        duracionMin:Number.isFinite(Number(task.durationMin))?Number(task.durationMin):null,
+        inicioFijo:task.startMin!=null?toHHMM(task.startMin):null,
+        finFijo:task.endMin!=null?toHHMM(task.endMin):null,
+        limiteInferior:Number.isFinite(Number(task.limitEarlyMin))?toHHMM(task.limitEarlyMin):null,
+        limiteSuperior:Number.isFinite(Number(task.limitLateMin))?toHHMM(task.limitLateMin):null,
+        dependeDe:task.structureParentId||null,
+        raiz:rootTaskFor(task)?.id||null,
+        localizacion:location,
+        asignadoA:assigned,
+        jerarquia:breadcrumb,
+        notas:task.comentario||""
+      };
+    });
+    return {
+      proyecto:{
+        nombre:state.project?.nombre||"",
+        fecha:state.project?.fecha||"",
+        zonaHoraria:state.project?.tz||""
+      },
+      parametros:{
+        avisoInicioTemprano:toHHMM(params.earlyStartThreshold)
+      },
+      staff:staffList.map(st=>({
+        id:st.id,
+        nombre:st.nombre||st.id,
+        rol:st.rol||"STAFF"
+      })),
+      localizaciones:(state.locations||[]).map(loc=>({
+        id:loc.id,
+        nombre:loc.nombre||loc.id
+      })),
+      tareas:taskPayload
+    };
+  };
+
+  const readOpenAiApiKey = ()=>{
+    try{
+      const stored=localStorage.getItem(SCHEDULE_AI_STORAGE_KEY);
+      if(stored && stored.trim()) return stored.trim();
+    }catch(e){}
+    const input=window.prompt("Introduce tu API key de OpenAI (se guardará localmente en este navegador)");
+    if(!input) return null;
+    const trimmed=input.trim();
+    if(!trimmed) return null;
+    try{
+      localStorage.setItem(SCHEDULE_AI_STORAGE_KEY, trimmed);
+    }catch(e){}
+    return trimmed;
+  };
+
+  const requestScheduleFromAI = async (payload)=>{
+    const apiKey=readOpenAiApiKey();
+    if(!apiKey) throw new Error("Es necesario introducir una API key de OpenAI.");
+    const body={
+      model:SCHEDULE_AI_MODEL,
+      temperature:0.2,
+      response_format:SCHEDULE_AI_RESPONSE_FORMAT,
+      messages:[
+        {role:"system",content:SCHEDULE_AI_SYSTEM_PROMPT},
+        {role:"user",content:JSON.stringify(payload)}
+      ]
+    };
+    let response;
+    try{
+      response=await fetch("https://api.openai.com/v1/chat/completions",{
+        method:"POST",
+        headers:{
+          "Content-Type":"application/json",
+          "Authorization":`Bearer ${apiKey}`
+        },
+        body:JSON.stringify(body)
+      });
+    }catch(err){
+      throw new Error("No se pudo contactar con el servicio de OpenAI.");
+    }
+    if(response.status===401 || response.status===403){
+      try{ localStorage.removeItem(SCHEDULE_AI_STORAGE_KEY); }catch(e){}
+      throw new Error("La API key de OpenAI no es válida o ha expirado.");
+    }
+    if(!response.ok){
+      let detail="";
+      try{ detail=await response.text(); }catch(e){}
+      const msg=detail?`OpenAI respondió con un error: ${detail}`:"OpenAI respondió con un error inesperado.";
+      throw new Error(msg);
+    }
+    return response.json();
+  };
+
+  const parseAiScheduleResponse = (data)=>{
+    const content=data?.choices?.[0]?.message?.content;
+    if(!content) throw new Error("La IA devolvió una respuesta vacía.");
+    let text=String(content).trim();
+    const fenced=text.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if(fenced) text=fenced[1].trim();
+    try{
+      return JSON.parse(text);
+    }catch(err){
+      throw new Error("No se pudo interpretar la respuesta de la IA.");
+    }
+  };
+
+  const computeMetricsFromSessions = (sessions)=>{
+    const sorted=(sessions||[]).slice().sort((a,b)=>{
+      const sa=Number.isFinite(Number(a?.startMin))?Number(a.startMin):Number.POSITIVE_INFINITY;
+      const sb=Number.isFinite(Number(b?.startMin))?Number(b.startMin):Number.POSITIVE_INFINITY;
+      return sa-sb;
+    });
+    const metrics={
+      sessionCount:sorted.length,
+      tasksScheduled:sorted.length,
+      totalMinutes:0,
+      gapMinutes:0,
+      breakCount:0,
+      earliestStart:null,
+      latestEnd:null,
+      unscheduled:0,
+      windowViolations:0,
+      fixedConflicts:0
+    };
+    let prevEnd=null;
+    sorted.forEach(session=>{
+      const start=Number.isFinite(Number(session?.startMin))?Number(session.startMin):null;
+      const end=Number.isFinite(Number(session?.endMin))?Number(session.endMin):null;
+      if(start!=null){
+        if(metrics.earliestStart==null || start<metrics.earliestStart) metrics.earliestStart=start;
+      }
+      if(end!=null){
+        if(metrics.latestEnd==null || end>metrics.latestEnd) metrics.latestEnd=end;
+      }
+      if(start!=null && end!=null && end>start){
+        const dur=end-start;
+        metrics.totalMinutes+=dur;
+        if(prevEnd!=null && start>prevEnd){
+          metrics.breakCount+=1;
+          metrics.gapMinutes+=start-prevEnd;
+        }
+        if(prevEnd==null || end>prevEnd) prevEnd=end;
+      }else{
+        metrics.unscheduled+=1;
+      }
+    });
+    return metrics;
+  };
+
+  const applyAiScheduleResult = (result)=>{
+    ensureScheduleMeta();
+    const staffList=(state.staff||[]);
+    const tasks=getTaskList();
+    const staffById=new Map(staffList.map(st=>[st.id, st]));
+    const staffByName=new Map(staffList.map(st=>[(st.nombre||st.id||"").toLowerCase(), st]));
+    const taskById=new Map(tasks.map(task=>[task.id, task]));
+    const taskByName=new Map(tasks.map(task=>[(labelForTask(task)||"").toLowerCase(), task]));
+    const schedules=Array.isArray(result?.staff)?result.staff:Array.isArray(result?.schedules)?result.schedules:[];
+    const sessionsByStaff={};
+    const warningsByStaff={};
+    const globalWarnings=new Set();
+    const scheduledTaskIds=new Set();
+
+    schedules.forEach(entry=>{
+      let staffId=entry?.staffId || entry?.id || entry?.personId || null;
+      if(staffId && staffById.has(staffId)){
+        staffId=staffById.get(staffId).id;
+      }else{
+        const nameKey=String(entry?.staffName || entry?.nombre || "").trim().toLowerCase();
+        if(nameKey && staffByName.has(nameKey)){
+          staffId=staffByName.get(nameKey).id;
+        }
+      }
+      if(!staffId){
+        const label=entry?.staffName || entry?.nombre || entry?.staffId || "desconocido";
+        globalWarnings.add(`La IA devolvió un miembro del staff no reconocido: ${label}.`);
+        return;
+      }
+      const sessions=[];
+      const staffWarnings=new Set(Array.isArray(entry?.warnings)?entry.warnings.map(msg=>String(msg)):[]);
+      const rawSessions=Array.isArray(entry?.sessions)?entry.sessions:[];
+      rawSessions.forEach((session, idx)=>{
+        const taskIdRaw=session?.taskId || session?.id || session?.actionId || null;
+        let task=taskIdRaw ? taskById.get(taskIdRaw) : null;
+        if(!task && session?.taskName){
+          const taskNameKey=String(session.taskName).trim().toLowerCase();
+          if(taskByName.has(taskNameKey)) task=taskByName.get(taskNameKey);
+        }
+        if(!task){
+          staffWarnings.add(`Sesión ${idx+1}: tarea desconocida (${taskIdRaw || session?.taskName || "sin identificador"}).`);
+          return;
+        }
+        const start=scheduleAiTimeToMinutes(session?.start ?? session?.startTime ?? session?.inicio ?? session?.horaInicio);
+        let end=scheduleAiTimeToMinutes(session?.end ?? session?.endTime ?? session?.fin ?? session?.horaFin);
+        const duration=Number(session?.durationMin ?? session?.duration ?? session?.duracionMin ?? session?.duracion);
+        if(start!=null && (end==null || end<=start) && Number.isFinite(duration) && duration>0){
+          end=normalizeMinute(start + duration);
+        }
+        if((start==null || end==null || end<=start)){
+          staffWarnings.add(`${labelForTask(task)}: horario incompleto devuelto por la IA.`);
+          return;
+        }
+        task.startMin=start;
+        task.endMin=end;
+        task.durationMin=Math.max(5, roundToFive(end-start));
+        task.assignedStaffIds=[staffId];
+        scheduledTaskIds.add(task.id);
+        sessions.push(makeTaskSession(task, start, end));
+      });
+      if(!sessions.length && !staffWarnings.size){
+        staffWarnings.add("La IA no generó sesiones para este miembro del staff.");
+      }
+      sessionsByStaff[staffId]=sessions;
+      warningsByStaff[staffId]=[...staffWarnings];
+    });
+
+    staffList.forEach(st=>{
+      if(!sessionsByStaff[st.id]) sessionsByStaff[st.id]=[];
+      if(!warningsByStaff[st.id]) warningsByStaff[st.id]=[];
+    });
+
+    state.sessions = state.sessions || {};
+    Object.keys(state.sessions).forEach(key=>{
+      if(key!=="CLIENTE" && !sessionsByStaff[key]) delete state.sessions[key];
+    });
+
+    const metricsByStaff={};
+    staffList.forEach(st=>{
+      const sessions=(sessionsByStaff[st.id]||[]).slice().sort((a,b)=> (a.startMin||0)-(b.startMin||0));
+      state.sessions[st.id]=sessions;
+      if(sessions.length){
+        state.horaInicial=state.horaInicial||{};
+        state.horaInicial[st.id]=sessions[0].startMin ?? null;
+        const firstLoc=sessions.find(s=>s.locationId)?.locationId || null;
+        state.localizacionInicial=state.localizacionInicial||{};
+        state.localizacionInicial[st.id]=firstLoc;
+      }else{
+        if(state.horaInicial && Object.prototype.hasOwnProperty.call(state.horaInicial, st.id)) delete state.horaInicial[st.id];
+        if(state.localizacionInicial && Object.prototype.hasOwnProperty.call(state.localizacionInicial, st.id)) delete state.localizacionInicial[st.id];
+      }
+      metricsByStaff[st.id]=computeMetricsFromSessions(sessions);
+      (warningsByStaff[st.id]||[]).forEach(msg=>globalWarnings.add(String(msg)));
+    });
+
+    const extraWarnings=Array.isArray(result?.warnings)?result.warnings:[];
+    extraWarnings.forEach(msg=>globalWarnings.add(String(msg)));
+
+    tasks.forEach(task=>{
+      if(task.structureRelation==="milestone") return;
+      if(!task.assignedStaffIds || !task.assignedStaffIds.length) return;
+      if(scheduledTaskIds.has(task.id)) return;
+      globalWarnings.add(`${labelForTask(task)}: la IA no devolvió horario para esta tarea.`);
+    });
+
+    state.scheduleMeta.generatedAt=new Date().toISOString();
+    state.scheduleMeta.lastMethod="IA";
+    state.scheduleMeta.warningsByStaff=warningsByStaff;
+    state.scheduleMeta.metricsByStaff=metricsByStaff;
+    state.scheduleMeta.globalMetrics=computeGlobalMetrics(metricsByStaff, staffList);
+    state.scheduleMeta.globalWarnings=[...globalWarnings];
+
+    touch();
+    if(typeof window.renderClient === "function") window.renderClient();
+    notifyScheduleSubscribers();
+    return {warnings:[...globalWarnings]};
+  };
+
+  const generateSchedulesWithAI = async ()=>{
+    ensureScheduleMeta();
+    const tasks=getTaskList();
+    if(!tasks.length) throw new Error("No hay tareas del cliente que planificar.");
+    if(!window.isScheduleCatalogAvailable()) throw new Error("Bloquea todas las tareas del cliente antes de generar los horarios.");
+    const staffList=(state.staff||[]);
+    if(!staffList.length) throw new Error("Añade miembros del staff para generar los horarios.");
+    const payload=collectScheduleAiPayload();
+    const response=await requestScheduleFromAI(payload);
+    const parsed=parseAiScheduleResponse(response);
+    return applyAiScheduleResult(parsed);
+  };
+
+  const runScheduleAiGeneration = async (container, button)=>{
+    if(!button || button.dataset.loading==="true") return;
+    const previousLabel=button.textContent;
+    button.dataset.loading="true";
+    button.disabled=true;
+    button.textContent="Consultando IA...";
+    try{
+      await generateSchedulesWithAI();
+      if(typeof flashStatus === "function") flashStatus("Horarios generados con IA.");
+    }catch(err){
+      console.error(err);
+      const message=err?.message || "No se pudieron generar los horarios con IA.";
+      if(typeof flashStatus === "function") flashStatus(message);
+      else alert(message);
+    }finally{
+      button.dataset.loading="false";
+      button.textContent=previousLabel;
+      renderScheduleCatalogInto(container);
+    }
   };
 
   const setScheduleParameter = (key, value)=>{
@@ -3963,6 +4308,7 @@
     const globalMetrics=computeGlobalMetrics(metricsByStaff, staffList);
 
     state.scheduleMeta.generatedAt = new Date().toISOString();
+    state.scheduleMeta.lastMethod = "ENGINE";
     state.scheduleMeta.warningsByStaff = warningsByStaff;
     state.scheduleMeta.metricsByStaff = metricsByStaff;
     state.scheduleMeta.globalMetrics = globalMetrics;
@@ -3992,6 +4338,7 @@
     if(!container) return;
     container.innerHTML="";
     const controls=el("div","schedule-controls");
+    const availabilityMsg="Bloquea todas las tareas del cliente para generar los horarios.";
     const btn=el("button","btn", state.scheduleMeta.generatedAt?"Regenerar horarios":"Generar horarios");
     const available=window.isScheduleCatalogAvailable();
     btn.type="button";
@@ -4006,11 +4353,22 @@
     };
     if(!available){
       btn.disabled=true;
-      btn.title="Bloquea todas las tareas del cliente para generar los horarios.";
+      btn.title=availabilityMsg;
     }
     controls.appendChild(btn);
+
+    const aiBtn=el("button","btn secondary","Generar horario con IA");
+    aiBtn.type="button";
+    aiBtn.onclick=()=> runScheduleAiGeneration(container, aiBtn);
+    if(!available){
+      aiBtn.disabled=true;
+      aiBtn.title=availabilityMsg;
+    }
+    controls.appendChild(aiBtn);
+
     if(state.scheduleMeta.generatedAt){
-      controls.appendChild(el("span","mini",`Última generación: ${formatScheduleTimestamp(state.scheduleMeta.generatedAt)}`));
+      const methodLabel=state.scheduleMeta.lastMethod==="IA"?"IA":"motor automático";
+      controls.appendChild(el("span","mini",`Última generación (${methodLabel}): ${formatScheduleTimestamp(state.scheduleMeta.generatedAt)}`));
     }
     const params=getScheduleParameters();
     const staffList=(state.staff||[]);
