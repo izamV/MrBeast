@@ -1389,6 +1389,7 @@
         distanceKm,
         durationDriveMin: drive,
         durationWalkMin: walk,
+        path:null,
         provider:"estimate",
         providerNote:"Estimación basada en distancia geodésica"
       });
@@ -1460,6 +1461,71 @@
         seg.providerNote = `Actualizado con Google Maps (${new Date().toLocaleString()})`;
         updated++;
       }
+    }
+    return { updated, warnings };
+  };
+
+  const fetchOsrmRoute = async (from, to, profile)=>{
+    const coords = `${from.lng},${from.lat};${to.lng},${to.lat}`;
+    const params = new URLSearchParams({ overview:"full", geometries:"geojson" });
+    const url = `https://router.project-osrm.org/route/v1/${profile}/${coords}?${params.toString()}`;
+    const res = await fetch(url);
+    if(!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if(data.code !== "Ok" || !Array.isArray(data.routes) || !data.routes.length){
+      throw new Error(data.message || data.code || "Ruta no disponible");
+    }
+    const route = data.routes[0];
+    const coordsList = Array.isArray(route.geometry?.coordinates)
+      ? route.geometry.coordinates.map(([lng, lat])=>({ lat, lng }))
+      : null;
+    return {
+      distanceKm: route.distance!=null ? route.distance / 1000 : null,
+      durationMin: route.duration!=null ? route.duration / 60 : null,
+      path: coordsList
+    };
+  };
+
+  const updateSegmentsWithOsrm = async (segments, callbacks={})=>{
+    const warnings=[];
+    let updated=0;
+    for(const seg of segments){
+      let driving=null;
+      let walking=null;
+      try{
+        driving = await fetchOsrmRoute(seg.from, seg.to, "driving");
+      }catch(err){
+        warnings.push(`Vehículo ${seg.from.nombre||seg.from.id} → ${seg.to.nombre||seg.to.id}: ${err.message}`);
+      }
+      try{
+        walking = await fetchOsrmRoute(seg.from, seg.to, "walking");
+      }catch(err){
+        warnings.push(`Caminando ${seg.from.nombre||seg.from.id} → ${seg.to.nombre||seg.to.id}: ${err.message}`);
+      }
+      let usedProvider=false;
+      if(driving){
+        if(Number.isFinite(driving.distanceKm)) seg.distanceKm = driving.distanceKm;
+        if(Number.isFinite(driving.durationMin)) seg.durationDriveMin = driving.durationMin;
+        if(!seg.path && Array.isArray(driving.path) && driving.path.length) seg.path = driving.path;
+        usedProvider = true;
+      }
+      if(walking){
+        if(Number.isFinite(walking.durationMin)) seg.durationWalkMin = walking.durationMin;
+        if(!seg.path && Array.isArray(walking.path) && walking.path.length) seg.path = walking.path;
+        usedProvider = true;
+      }
+      updateSegmentEstimates(seg);
+      if(usedProvider){
+        seg.provider = "osrm";
+        seg.providerNote = `Ruta calculada con OpenStreetMap (${new Date().toLocaleString()})`;
+        updated++;
+      }
+      if(callbacks.onSegmentUpdated){
+        try{ callbacks.onSegmentUpdated(seg); }catch(err){}
+      }
+    }
+    if(callbacks.onComplete){
+      try{ callbacks.onComplete({ updated, warnings }); }catch(err){}
     }
     return { updated, warnings };
   };
@@ -1568,10 +1634,15 @@
       ctx.lineCap = "round";
       ctx.beginPath();
       segments.forEach(seg=>{
-        const a = projectPoint(seg.from.lat, seg.from.lng, view);
-        const b = projectPoint(seg.to.lat, seg.to.lng, view);
-        ctx.moveTo(a.x, a.y);
-        ctx.lineTo(b.x, b.y);
+        const path = Array.isArray(seg.path) && seg.path.length >= 2 ? seg.path : [seg.from, seg.to];
+        path.forEach((point, idx)=>{
+          const proj = projectPoint(point.lat, point.lng, view);
+          if(idx===0){
+            ctx.moveTo(proj.x, proj.y);
+          }else{
+            ctx.lineTo(proj.x, proj.y);
+          }
+        });
       });
       ctx.stroke();
       ctx.restore();
@@ -1589,6 +1660,42 @@
       ctx.restore();
     };
 
+    const segmentMidpoint = (seg)=>{
+      const path = Array.isArray(seg.path) && seg.path.length >= 2 ? seg.path : [seg.from, seg.to];
+      if(path.length < 2){
+        const only = path[0] || seg.from || seg.to || { lat:0, lng:0 };
+        return { lat: only.lat || 0, lng: only.lng || 0 };
+      }
+      let total = 0;
+      const distances = [];
+      for(let i=0; i<path.length-1; i++){
+        const d = haversineKm(path[i], path[i+1]);
+        distances.push(d);
+        total += d;
+      }
+      if(total === 0){
+        const first = path[0];
+        return { lat:first.lat, lng:first.lng };
+      }
+      const half = total / 2;
+      let acc = 0;
+      for(let i=0; i<distances.length; i++){
+        const segLen = distances[i];
+        if(acc + segLen >= half){
+          const start = path[i];
+          const end = path[i+1];
+          const t = segLen ? (half - acc) / segLen : 0;
+          return {
+            lat: start.lat + (end.lat - start.lat) * t,
+            lng: start.lng + (end.lng - start.lng) * t
+          };
+        }
+        acc += segLen;
+      }
+      const last = path[path.length-1];
+      return { lat:last.lat, lng:last.lng };
+    };
+
     const updateOverlay = ()=>{
       locationPins.forEach(pin=>{
         const pos = projectPoint(pin.loc.lat, pin.loc.lng, view);
@@ -1602,7 +1709,7 @@
       });
       segmentLabels.forEach(item=>{
         const seg = item.seg;
-        const mid = { lat:(seg.from.lat + seg.to.lat)/2, lng:(seg.from.lng + seg.to.lng)/2 };
+        const mid = segmentMidpoint(seg);
         const pos = projectPoint(mid.lat, mid.lng, view);
         const text = `${formatDistance(seg.distanceKm)}\nVehículo: ${formatDuration(seg.durationDriveMin)}\nCaminando: ${formatDuration(seg.durationWalkMin)}`;
         item.el.textContent = text;
@@ -1724,7 +1831,10 @@
         tr.appendChild(el("td",null,formatDistance(seg.distanceKm)));
         tr.appendChild(el("td",null,formatDuration(seg.durationDriveMin)));
         tr.appendChild(el("td",null,formatDuration(seg.durationWalkMin)));
-        tr.appendChild(el("td",null, seg.provider === "google" ? "Google Maps" : "Estimación" ));
+        let providerLabel = "Estimación";
+        if(seg.provider === "google") providerLabel = "Google Maps";
+        else if(seg.provider === "osrm") providerLabel = "OpenStreetMap";
+        tr.appendChild(el("td",null, providerLabel ));
         if(seg.providerNote){
           tr.title = seg.providerNote;
         }
@@ -1736,43 +1846,49 @@
 
     renderTable();
 
+    const api = {
+      element: wrapper,
+      refresh: ()=>{ renderTable(); },
+      setStatus: (text)=>{ status.textContent = text; }
+    };
+
     saveBtn.onclick=()=>{
       const key = keyInput.value || "";
       const saved = persistGoogleApiKey(key);
-      status.textContent = saved ? "API key guardada en el proyecto actual." : "API key eliminada.";
+      api.setStatus(saved ? "API key guardada en el proyecto actual." : "API key eliminada.");
     };
 
     refreshBtn.onclick=async()=>{
       const key = (keyInput.value || "").trim();
       if(!key){
-        status.textContent = "Introduce una API key de Google Maps para actualizar las distancias.";
+        api.setStatus("Introduce una API key de Google Maps para actualizar las distancias.");
         keyInput.focus();
         return;
       }
       if(!segments.length){
-        status.textContent = "Añade al menos dos localizaciones antes de consultar Google Maps.";
+        api.setStatus("Añade al menos dos localizaciones antes de consultar Google Maps.");
         return;
       }
       persistGoogleApiKey(key);
       refreshBtn.disabled = true;
       saveBtn.disabled = true;
-      status.textContent = "Consultando Google Maps...";
+      api.setStatus("Consultando Google Maps...");
       try{
         const { updated, warnings } = await updateSegmentsWithGoogle(segments, key);
         if(updated){
-          status.textContent = warnings.length
+          api.setStatus(warnings.length
             ? `Distancias actualizadas. Algunas advertencias: ${warnings[0]}`
-            : "Distancias actualizadas con Google Maps.";
+            : "Distancias actualizadas con Google Maps.");
         }else{
-          status.textContent = warnings[0] || "No se pudieron actualizar las distancias con Google Maps.";
+          api.setStatus(warnings[0] || "No se pudieron actualizar las distancias con Google Maps.");
         }
       }catch(err){
-        status.textContent = err.message || "No se pudieron obtener distancias de Google Maps.";
+        api.setStatus(err.message || "No se pudieron obtener distancias de Google Maps.");
       }finally{
         refreshBtn.disabled = false;
         saveBtn.disabled = false;
         segments.forEach(updateSegmentEstimates);
-        renderTable();
+        api.refresh();
         if(mapController && typeof mapController.refresh === "function") mapController.refresh();
       }
     };
@@ -1780,7 +1896,7 @@
     wrapper.appendChild(controls);
     wrapper.appendChild(tableHolder);
     wrapper.appendChild(status);
-    return wrapper;
+    return api;
   };
   function emitChanged(){ document.dispatchEvent(new Event("catalogs-changed")); touch(); }
 
@@ -1845,7 +1961,28 @@
     const segments = buildSegments(validLocations);
     segments.forEach(updateSegmentEstimates);
     const mapController = setupCatalogMap(mapContainer, validLocations, segments);
-    infoSection.appendChild(buildDistancePanel(segments, mapController));
+    const distancePanel = buildDistancePanel(segments, mapController);
+    infoSection.appendChild(distancePanel.element);
+    if(segments.length){
+      distancePanel.setStatus("Calculando rutas con OpenStreetMap...");
+      updateSegmentsWithOsrm(segments, {
+        onSegmentUpdated: ()=>{
+          distancePanel.refresh();
+          if(mapController && typeof mapController.refresh === "function") mapController.refresh();
+        },
+        onComplete: ({ updated, warnings })=>{
+          if(updated){
+            distancePanel.setStatus(warnings.length
+              ? `Distancias calculadas con OpenStreetMap. Advertencia: ${warnings[0]}`
+              : "Distancias calculadas con OpenStreetMap.");
+          }else{
+            distancePanel.setStatus(warnings[0] || "No se pudieron calcular rutas con OpenStreetMap.");
+          }
+        }
+      }).catch(err=>{
+        distancePanel.setStatus(err?.message ? `Error calculando rutas: ${err.message}` : "Error calculando rutas con OpenStreetMap.");
+      });
+    }
 
     cont.appendChild(infoSection);
   };
