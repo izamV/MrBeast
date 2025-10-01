@@ -31,7 +31,7 @@
   if(!root.state){
     root.state = {
       project:{ nombre:"Proyecto", fecha:"", tz:"Europe/Madrid", updatedAt:"", view:{ lastTab:"CLIENTE", subGantt:"Gantt", selectedIndex:{} } },
-      integrations:{ googleMaps:{ apiKey:"" } },
+      integrations:{},
       locations:[
         { id:"L_STAGE", nombre:"Escenario principal", lat:"41.3870", lng:"2.1701" },
         { id:"L_STORAGE", nombre:"Almacén central", lat:"41.3865", lng:"2.1698" },
@@ -1234,7 +1234,6 @@
   const DEFAULT_MAP_VIEW = { lat: 40.4168, lng: -3.7038, zoom: 5 };
   const WALKING_SPEED_KMPH = 4.5;
   const DRIVING_SPEED_KMPH = 45;
-  const GOOGLE_KEY_STORAGE = "eventplan.googleMapsKey";
 
   const toNumber = (value)=>{
     const str = String(value ?? "").trim().replace(/,/g, ".");
@@ -1324,40 +1323,6 @@
     return { drive, walk };
   };
 
-  const ensureGoogleConfig = ()=>{
-    state.integrations = state.integrations || {};
-    state.integrations.googleMaps = state.integrations.googleMaps || { apiKey:"" };
-    return state.integrations.googleMaps;
-  };
-
-  const loadGoogleApiKey = ()=>{
-    const cfg = ensureGoogleConfig();
-    if(cfg.apiKey) return cfg.apiKey;
-    try{
-      return localStorage.getItem(GOOGLE_KEY_STORAGE) || "";
-    }catch(err){
-      return "";
-    }
-  };
-
-  const persistGoogleApiKey = (key)=>{
-    const cfg = ensureGoogleConfig();
-    const trimmed = key.trim();
-    if(cfg.apiKey !== trimmed){
-      cfg.apiKey = trimmed;
-      touch();
-    }
-    try{
-      if(trimmed){
-        localStorage.setItem(GOOGLE_KEY_STORAGE, trimmed);
-      }else{
-        localStorage.removeItem(GOOGLE_KEY_STORAGE);
-      }
-    }catch(err){
-    }
-    return trimmed;
-  };
-
   const formatDistance = (km)=>{
     if(!Number.isFinite(km)) return "-";
     if(km >= 100) return `${km.toFixed(0)} km`;
@@ -1402,67 +1367,6 @@
     const { drive, walk } = estimateTimes(seg.distanceKm);
     if(!Number.isFinite(seg.durationDriveMin)) seg.durationDriveMin = drive;
     if(!Number.isFinite(seg.durationWalkMin)) seg.durationWalkMin = walk;
-  };
-
-  const fetchDistanceMatrix = async (from, to, mode, apiKey)=>{
-    const params = new URLSearchParams({
-      units:"metric",
-      origins:`${from.lat},${from.lng}`,
-      destinations:`${to.lat},${to.lng}`,
-      mode,
-      key:apiKey
-    });
-    const url = `https://maps.googleapis.com/maps/api/distancematrix/json?${params.toString()}`;
-    const res = await fetch(url);
-    if(!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    if(data.status !== "OK"){
-      throw new Error(data.error_message || data.status || "Respuesta no válida");
-    }
-    const element = data.rows?.[0]?.elements?.[0];
-    if(!element || element.status !== "OK"){
-      throw new Error(element?.status || "Sin datos");
-    }
-    return {
-      distanceKm: element.distance?.value!=null ? element.distance.value / 1000 : null,
-      durationMin: element.duration?.value!=null ? element.duration.value / 60 : null
-    };
-  };
-
-  const updateSegmentsWithGoogle = async (segments, apiKey)=>{
-    const warnings=[];
-    let updated=0;
-    for(const seg of segments){
-      let driving=null;
-      let walking=null;
-      try{
-        driving = await fetchDistanceMatrix(seg.from, seg.to, "driving", apiKey);
-      }catch(err){
-        warnings.push(`Vehículo ${seg.from.nombre||seg.from.id} → ${seg.to.nombre||seg.to.id}: ${err.message}`);
-      }
-      try{
-        walking = await fetchDistanceMatrix(seg.from, seg.to, "walking", apiKey);
-      }catch(err){
-        warnings.push(`Caminando ${seg.from.nombre||seg.from.id} → ${seg.to.nombre||seg.to.id}: ${err.message}`);
-      }
-      const distanceSource = driving?.distanceKm ?? walking?.distanceKm;
-      if(Number.isFinite(distanceSource)){
-        seg.distanceKm = distanceSource;
-      }
-      if(driving?.durationMin != null){
-        seg.durationDriveMin = driving.durationMin;
-      }
-      if(walking?.durationMin != null){
-        seg.durationWalkMin = walking.durationMin;
-      }
-      updateSegmentEstimates(seg);
-      if(driving || walking){
-        seg.provider = "google";
-        seg.providerNote = `Actualizado con Google Maps (${new Date().toLocaleString()})`;
-        updated++;
-      }
-    }
-    return { updated, warnings };
   };
 
   const fetchOsrmRoute = async (from, to, profile)=>{
@@ -1795,16 +1699,9 @@
   const buildDistancePanel = (segments, mapController)=>{
     const wrapper = el("div","loc-distance-panel");
     const controls = el("div","loc-distance-controls");
-    const keyInput = el("input","input loc-distance-key");
-    keyInput.type = "text";
-    keyInput.placeholder = "API key de Google Maps";
-    keyInput.value = loadGoogleApiKey();
-    const saveBtn = el("button","btn small","Guardar API key");
-    const refreshBtn = el("button","btn small","Actualizar con Google Maps");
-    const status = el("div","mini","Las distancias se calculan automáticamente con estimaciones básicas.");
+    const refreshBtn = el("button","btn small","Recalcular con OpenStreetMap");
+    const status = el("div","mini","Las distancias se calculan automáticamente con OpenStreetMap.");
 
-    controls.appendChild(keyInput);
-    controls.appendChild(saveBtn);
     controls.appendChild(refreshBtn);
 
     const tableHolder = el("div","loc-distance-table-holder");
@@ -1815,6 +1712,12 @@
         tableHolder.appendChild(el("div","mini","Añade al menos dos localizaciones para calcular distancias."));
         return;
       }
+      const getName = (loc)=> loc?.nombre || loc?.id || "-";
+      const sortedSegments = [...segments].sort((a,b)=>{
+        const fromCmp = getName(a.from).localeCompare(getName(b.from));
+        if(fromCmp) return fromCmp;
+        return getName(a.to).localeCompare(getName(b.to));
+      });
       const tbl = el("table","loc-distance-table");
       const thead = el("thead");
       const thr = el("tr");
@@ -1824,16 +1727,15 @@
       thead.appendChild(thr);
       tbl.appendChild(thead);
       const tbody = el("tbody");
-      segments.forEach(seg=>{
+      sortedSegments.forEach(seg=>{
         const tr = el("tr");
-        tr.appendChild(el("td",null,seg.from.nombre || seg.from.id || "-"));
-        tr.appendChild(el("td",null,seg.to.nombre || seg.to.id || "-"));
+        tr.appendChild(el("td",null,getName(seg.from)));
+        tr.appendChild(el("td",null,getName(seg.to)));
         tr.appendChild(el("td",null,formatDistance(seg.distanceKm)));
         tr.appendChild(el("td",null,formatDuration(seg.durationDriveMin)));
         tr.appendChild(el("td",null,formatDuration(seg.durationWalkMin)));
         let providerLabel = "Estimación";
-        if(seg.provider === "google") providerLabel = "Google Maps";
-        else if(seg.provider === "osrm") providerLabel = "OpenStreetMap";
+        if(seg.provider === "osrm") providerLabel = "OpenStreetMap";
         tr.appendChild(el("td",null, providerLabel ));
         if(seg.providerNote){
           tr.title = seg.providerNote;
@@ -1844,59 +1746,52 @@
       tableHolder.appendChild(tbl);
     };
 
-    renderTable();
-
-    const api = {
-      element: wrapper,
-      refresh: ()=>{ renderTable(); },
-      setStatus: (text)=>{ status.textContent = text; }
-    };
-
-    saveBtn.onclick=()=>{
-      const key = keyInput.value || "";
-      const saved = persistGoogleApiKey(key);
-      api.setStatus(saved ? "API key guardada en el proyecto actual." : "API key eliminada.");
-    };
-
-    refreshBtn.onclick=async()=>{
-      const key = (keyInput.value || "").trim();
-      if(!key){
-        api.setStatus("Introduce una API key de Google Maps para actualizar las distancias.");
-        keyInput.focus();
-        return;
+    const triggerRefresh = ()=>{
+      renderTable();
+      if(mapController && typeof mapController.refresh === "function"){
+        mapController.refresh();
       }
+    };
+
+    const runOsrmUpdate = async()=>{
       if(!segments.length){
-        api.setStatus("Añade al menos dos localizaciones antes de consultar Google Maps.");
+        status.textContent = "Añade al menos dos localizaciones para calcular distancias.";
         return;
       }
-      persistGoogleApiKey(key);
-      refreshBtn.disabled = true;
-      saveBtn.disabled = true;
-      api.setStatus("Consultando Google Maps...");
+      status.textContent = "Calculando rutas con OpenStreetMap...";
       try{
-        const { updated, warnings } = await updateSegmentsWithGoogle(segments, key);
-        if(updated){
-          api.setStatus(warnings.length
-            ? `Distancias actualizadas. Algunas advertencias: ${warnings[0]}`
-            : "Distancias actualizadas con Google Maps.");
-        }else{
-          api.setStatus(warnings[0] || "No se pudieron actualizar las distancias con Google Maps.");
-        }
+        await updateSegmentsWithOsrm(segments, {
+          onSegmentUpdated: ()=>{
+            triggerRefresh();
+          },
+          onComplete: ({ updated, warnings })=>{
+            if(updated){
+              status.textContent = warnings.length
+                ? `Distancias calculadas con OpenStreetMap. Advertencia: ${warnings[0]}`
+                : "Distancias calculadas con OpenStreetMap.";
+            }else{
+              status.textContent = warnings[0] || "No se pudieron calcular rutas con OpenStreetMap.";
+            }
+          }
+        });
       }catch(err){
-        api.setStatus(err.message || "No se pudieron obtener distancias de Google Maps.");
-      }finally{
-        refreshBtn.disabled = false;
-        saveBtn.disabled = false;
-        segments.forEach(updateSegmentEstimates);
-        api.refresh();
-        if(mapController && typeof mapController.refresh === "function") mapController.refresh();
+        status.textContent = err?.message ? `Error calculando rutas: ${err.message}` : "Error calculando rutas con OpenStreetMap.";
       }
     };
+
+    refreshBtn.onclick = runOsrmUpdate;
+
+    renderTable();
 
     wrapper.appendChild(controls);
     wrapper.appendChild(tableHolder);
     wrapper.appendChild(status);
-    return api;
+    return {
+      element: wrapper,
+      refresh: renderTable,
+      runUpdate: runOsrmUpdate,
+      setStatus: (text)=>{ status.textContent = text; }
+    };
   };
   function emitChanged(){ document.dispatchEvent(new Event("catalogs-changed")); touch(); }
 
@@ -1963,26 +1858,7 @@
     const mapController = setupCatalogMap(mapContainer, validLocations, segments);
     const distancePanel = buildDistancePanel(segments, mapController);
     infoSection.appendChild(distancePanel.element);
-    if(segments.length){
-      distancePanel.setStatus("Calculando rutas con OpenStreetMap...");
-      updateSegmentsWithOsrm(segments, {
-        onSegmentUpdated: ()=>{
-          distancePanel.refresh();
-          if(mapController && typeof mapController.refresh === "function") mapController.refresh();
-        },
-        onComplete: ({ updated, warnings })=>{
-          if(updated){
-            distancePanel.setStatus(warnings.length
-              ? `Distancias calculadas con OpenStreetMap. Advertencia: ${warnings[0]}`
-              : "Distancias calculadas con OpenStreetMap.");
-          }else{
-            distancePanel.setStatus(warnings[0] || "No se pudieron calcular rutas con OpenStreetMap.");
-          }
-        }
-      }).catch(err=>{
-        distancePanel.setStatus(err?.message ? `Error calculando rutas: ${err.message}` : "Error calculando rutas con OpenStreetMap.");
-      });
-    }
+    distancePanel.runUpdate();
 
     cont.appendChild(infoSection);
   };
