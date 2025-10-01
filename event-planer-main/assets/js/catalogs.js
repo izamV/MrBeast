@@ -9,6 +9,11 @@
   const WALKING_SPEED_KMPH = 4.5;
   const DRIVING_SPEED_KMPH = 45;
   const GOOGLE_KEY_STORAGE = "eventplan.googleMapsKey";
+  const SEGMENT_COLOR_PALETTE = [
+    "#38bdf8", "#f472b6", "#34d399", "#f97316",
+    "#c084fc", "#22d3ee", "#facc15", "#fb7185",
+    "#2dd4bf", "#f87171", "#a855f7", "#4ade80"
+  ];
 
   const toNumber = (value)=>{
     const str = String(value ?? "").trim().replace(/,/g, ".");
@@ -98,6 +103,16 @@
     return { drive, walk };
   };
 
+  const colorWithAlpha = (hex, alpha)=>{
+    const m = /^#([0-9a-f]{6})$/i.exec(hex || "");
+    if(!m) return hex;
+    const num = parseInt(m[1], 16);
+    const r = (num >> 16) & 255;
+    const g = (num >> 8) & 255;
+    const b = num & 255;
+    return `rgba(${r},${g},${b},${alpha})`;
+  };
+
   const ensureGoogleConfig = ()=>{
     state.integrations = state.integrations || {};
     state.integrations.googleMaps = state.integrations.googleMaps || { apiKey:"" };
@@ -152,22 +167,24 @@
 
   const buildSegments = (locations)=>{
     const segments=[];
-    for(let i=0; i<locations.length-1; i++){
-      const from = locations[i];
-      const to = locations[i+1];
-      const distanceKm = haversineKm(from, to);
-      const { drive, walk } = estimateTimes(distanceKm);
-      segments.push({
-        id:`${from.id||i}_${to.id||i+1}`,
-        from,
-        to,
-        distanceKm,
-        durationDriveMin: drive,
-        durationWalkMin: walk,
-        path:null,
-        provider:"estimate",
-        providerNote:"Estimación basada en distancia geodésica"
-      });
+    for(let i=0; i<locations.length; i++){
+      for(let j=i+1; j<locations.length; j++){
+        const from = locations[i];
+        const to = locations[j];
+        const distanceKm = haversineKm(from, to);
+        const { drive, walk } = estimateTimes(distanceKm);
+        segments.push({
+          id:`${from.id||i}_${to.id||i+1}`,
+          from,
+          to,
+          distanceKm,
+          durationDriveMin: drive,
+          durationWalkMin: walk,
+          path:null,
+          provider:"estimate",
+          providerNote:"Estimación basada en distancia geodésica"
+        });
+      }
     }
     return segments;
   };
@@ -322,6 +339,9 @@
     mapArea.appendChild(overlay);
     container.appendChild(mapArea);
 
+    const legend = el("div","loc-map-legend");
+    container.appendChild(legend);
+
     const view={ center:{ lat:DEFAULT_MAP_VIEW.lat, lng:DEFAULT_MAP_VIEW.lng }, zoom:DEFAULT_MAP_VIEW.zoom, width:mapArea.clientWidth||760, height:mapArea.clientHeight||420 };
     const init = computeInitialView(locations, view.width, view.height);
     view.center = clampLatLng(init.center.lat, init.center.lng);
@@ -338,11 +358,29 @@
       return { loc, el:pin };
     });
 
-    const segmentLabels = segments.map((seg)=>{
-      const label = el("div","loc-map-segment","");
-      overlay.appendChild(label);
-      return { seg, el:label };
+    segments.forEach((seg, idx)=>{
+      seg.color = SEGMENT_COLOR_PALETTE[idx % SEGMENT_COLOR_PALETTE.length];
     });
+
+    const buildLegend = ()=>{
+      legend.innerHTML="";
+      if(!segments.length){
+        legend.style.display = "none";
+        return;
+      }
+      legend.style.display = "flex";
+      segments.forEach(seg=>{
+        const item = el("div","loc-map-legend-item");
+        const swatch = el("span","loc-map-legend-swatch");
+        swatch.style.background = seg.color || SEGMENT_COLOR_PALETTE[0];
+        const fromName = seg.from.nombre || seg.from.id || "-";
+        const toName = seg.to.nombre || seg.to.id || "-";
+        item.appendChild(swatch);
+        item.appendChild(el("span","loc-map-legend-label", `${fromName} → ${toName}`));
+        legend.appendChild(item);
+      });
+    };
+    buildLegend();
 
     const resize = ()=>{
       view.width = mapArea.clientWidth || 760;
@@ -404,12 +442,15 @@
     const drawRoutes = ()=>{
       if(!segments.length) return;
       ctx.save();
-      ctx.strokeStyle = "rgba(56,189,248,0.85)";
-      ctx.lineWidth = 3;
       ctx.lineCap = "round";
-      ctx.beginPath();
+      ctx.lineJoin = "round";
+      ctx.lineWidth = 3;
       segments.forEach(seg=>{
+        const color = seg.color || SEGMENT_COLOR_PALETTE[0];
         const path = Array.isArray(seg.path) && seg.path.length >= 2 ? seg.path : [seg.from, seg.to];
+        if(!Array.isArray(path) || path.length < 2) return;
+        ctx.strokeStyle = colorWithAlpha(color, 0.85);
+        ctx.beginPath();
         path.forEach((point, idx)=>{
           const proj = projectPoint(point.lat, point.lng, view);
           if(idx===0){
@@ -418,8 +459,8 @@
             ctx.lineTo(proj.x, proj.y);
           }
         });
+        ctx.stroke();
       });
-      ctx.stroke();
       ctx.restore();
     };
 
@@ -435,42 +476,6 @@
       ctx.restore();
     };
 
-    const segmentMidpoint = (seg)=>{
-      const path = Array.isArray(seg.path) && seg.path.length >= 2 ? seg.path : [seg.from, seg.to];
-      if(path.length < 2){
-        const only = path[0] || seg.from || seg.to || { lat:0, lng:0 };
-        return { lat: only.lat || 0, lng: only.lng || 0 };
-      }
-      let total = 0;
-      const distances = [];
-      for(let i=0; i<path.length-1; i++){
-        const d = haversineKm(path[i], path[i+1]);
-        distances.push(d);
-        total += d;
-      }
-      if(total === 0){
-        const first = path[0];
-        return { lat:first.lat, lng:first.lng };
-      }
-      const half = total / 2;
-      let acc = 0;
-      for(let i=0; i<distances.length; i++){
-        const segLen = distances[i];
-        if(acc + segLen >= half){
-          const start = path[i];
-          const end = path[i+1];
-          const t = segLen ? (half - acc) / segLen : 0;
-          return {
-            lat: start.lat + (end.lat - start.lat) * t,
-            lng: start.lng + (end.lng - start.lng) * t
-          };
-        }
-        acc += segLen;
-      }
-      const last = path[path.length-1];
-      return { lat:last.lat, lng:last.lng };
-    };
-
     const updateOverlay = ()=>{
       locationPins.forEach(pin=>{
         const pos = projectPoint(pin.loc.lat, pin.loc.lng, view);
@@ -480,20 +485,6 @@
           pin.el.style.display="";
           pin.el.style.left = `${pos.x}px`;
           pin.el.style.top = `${pos.y}px`;
-        }
-      });
-      segmentLabels.forEach(item=>{
-        const seg = item.seg;
-        const mid = segmentMidpoint(seg);
-        const pos = projectPoint(mid.lat, mid.lng, view);
-        const text = `${formatDistance(seg.distanceKm)}\nVehículo: ${formatDuration(seg.durationDriveMin)}\nCaminando: ${formatDuration(seg.durationWalkMin)}`;
-        item.el.textContent = text;
-        if(pos.x < -120 || pos.x > view.width+120 || pos.y < -120 || pos.y > view.height+120){
-          item.el.style.display="none";
-        }else{
-          item.el.style.display="";
-          item.el.style.left = `${pos.x}px`;
-          item.el.style.top = `${pos.y}px`;
         }
       });
     };
@@ -564,7 +555,12 @@
 
     resize();
 
-    return { refresh: render };
+    return {
+      refresh: ()=>{
+        buildLegend();
+        render();
+      }
+    };
   };
 
   const buildDistancePanel = (segments, mapController)=>{
