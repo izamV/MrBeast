@@ -14,6 +14,15 @@
     "#2dd4bf", "#f87171", "#a855f7", "#4ade80"
   ];
 
+  const getLocationKey = (loc, idx)=>{
+    if(!loc) return `LOC_${idx}`;
+    if(loc.id) return String(loc.id);
+    const base = typeof loc.nombre === "string" && loc.nombre.trim()
+      ? loc.nombre.trim().replace(/\s+/g, "_")
+      : `LOC_${idx+1}`;
+    return `${base}_${idx}`;
+  };
+
   const toNumber = (value)=>{
     const str = String(value ?? "").trim().replace(/,/g, ".");
     if(!str) return NaN;
@@ -225,14 +234,19 @@
     return { updated, warnings };
   };
 
-  const setupCatalogMap = (container, locations, segments)=>{
+  const setupCatalogMap = (container, locations, segments, options={})=>{
     if(container._cleanup){
       try{ container._cleanup(); }catch(err){}
     }
     container.innerHTML="";
     if(!locations.length){
       container.appendChild(el("div","mini","Añade localizaciones con coordenadas para ver el mapa."));
-      return { refresh:()=>{} };
+      return {
+        refresh:()=>{},
+        setVisibleLocations: ()=>{},
+        getLocationColor: ()=>null,
+        getLocationId: ()=>null
+      };
     }
 
     const mapArea = el("div","loc-map-area");
@@ -245,6 +259,21 @@
     const legend = el("div","loc-map-legend");
     container.appendChild(legend);
 
+    const locationIdMap = new Map();
+    locations.forEach((loc, idx)=>{
+      locationIdMap.set(loc, getLocationKey(loc, idx));
+    });
+
+    const locationColors = new Map();
+    locations.forEach((loc, idx)=>{
+      const id = locationIdMap.get(loc);
+      const provided = options.locationColors instanceof Map ? options.locationColors.get(id) : null;
+      const color = provided || SEGMENT_COLOR_PALETTE[idx % SEGMENT_COLOR_PALETTE.length];
+      locationColors.set(id, color);
+    });
+
+    let visibleLocationIds = new Set(locations.map((loc, idx)=> locationIdMap.get(loc)));
+
     const view={ center:{ lat:DEFAULT_MAP_VIEW.lat, lng:DEFAULT_MAP_VIEW.lng }, zoom:DEFAULT_MAP_VIEW.zoom, width:mapArea.clientWidth||760, height:mapArea.clientHeight||420 };
     const init = computeInitialView(locations, view.width, view.height);
     view.center = clampLatLng(init.center.lat, init.center.lng);
@@ -254,25 +283,37 @@
     const tileCache = new Map();
 
     const locationPins = locations.map((loc, idx)=>{
+      const locId = locationIdMap.get(loc);
       const pin=el("div","loc-map-location");
-      pin.appendChild(el("span","loc-map-dot"));
+      const dot = el("span","loc-map-dot");
+      const dotColor = locationColors.get(locId);
+      if(dotColor) dot.style.background = dotColor;
+      pin.appendChild(dot);
       pin.appendChild(el("span","loc-map-label", loc.nombre || loc.id || `Punto ${idx+1}`));
       overlay.appendChild(pin);
-      return { loc, el:pin };
+      return { loc, id:locId, el:pin };
     });
 
     segments.forEach((seg, idx)=>{
       seg.color = SEGMENT_COLOR_PALETTE[idx % SEGMENT_COLOR_PALETTE.length];
     });
 
+    const isLocationVisible = (loc)=>{
+      const id = locationIdMap.get(loc);
+      return id ? visibleLocationIds.has(id) : false;
+    };
+
+    const activeSegments = ()=> segments.filter(seg=> isLocationVisible(seg.from) && isLocationVisible(seg.to));
+
     const buildLegend = ()=>{
       legend.innerHTML="";
-      if(!segments.length){
+      const visibleSegments = activeSegments();
+      if(!visibleSegments.length){
         legend.style.display = "none";
         return;
       }
       legend.style.display = "flex";
-      segments.forEach(seg=>{
+      visibleSegments.forEach(seg=>{
         const item = el("div","loc-map-legend-item");
         const swatch = el("span","loc-map-legend-swatch");
         swatch.style.background = seg.color || SEGMENT_COLOR_PALETTE[0];
@@ -280,6 +321,8 @@
         const toName = seg.to.nombre || seg.to.id || "-";
         item.appendChild(swatch);
         item.appendChild(el("span","loc-map-legend-label", `${fromName} → ${toName}`));
+        const distanceLabel = Number.isFinite(seg.distanceKm) ? formatDistance(seg.distanceKm) : "-";
+        item.appendChild(el("span","loc-map-legend-meta", distanceLabel));
         legend.appendChild(item);
       });
     };
@@ -343,12 +386,13 @@
     };
 
     const drawRoutes = ()=>{
-      if(!segments.length) return;
+      const visibleSegments = activeSegments();
+      if(!visibleSegments.length) return;
       ctx.save();
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
       ctx.lineWidth = 3;
-      segments.forEach(seg=>{
+      visibleSegments.forEach(seg=>{
         const color = seg.color || SEGMENT_COLOR_PALETTE[0];
         const path = Array.isArray(seg.path) && seg.path.length >= 2 ? seg.path : [seg.from, seg.to];
         if(!Array.isArray(path) || path.length < 2) return;
@@ -369,18 +413,28 @@
 
     const drawPoints = ()=>{
       ctx.save();
-      ctx.fillStyle="rgba(226,232,240,0.9)";
-      locations.forEach(loc=>{
+      const visible = locations.filter(isLocationVisible);
+      visible.forEach(loc=>{
         const p = projectPoint(loc.lat, loc.lng, view);
+        const locId = locationIdMap.get(loc);
+        const fill = locationColors.get(locId) || "rgba(226,232,240,0.9)";
+        ctx.fillStyle = colorWithAlpha(fill, 0.92);
+        ctx.strokeStyle = "rgba(15,23,42,0.85)";
+        ctx.lineWidth = 2;
         ctx.beginPath();
         ctx.arc(p.x, p.y, 4, 0, Math.PI*2);
         ctx.fill();
+        ctx.stroke();
       });
       ctx.restore();
     };
 
     const updateOverlay = ()=>{
       locationPins.forEach(pin=>{
+        if(!visibleLocationIds.has(pin.id)){
+          pin.el.style.display = "none";
+          return;
+        }
         const pos = projectPoint(pin.loc.lat, pin.loc.lng, view);
         if(pos.x < -100 || pos.x > view.width+100 || pos.y < -100 || pos.y > view.height+100){
           pin.el.style.display="none";
@@ -462,7 +516,15 @@
       refresh: ()=>{
         buildLegend();
         render();
-      }
+      },
+      setVisibleLocations: (ids)=>{
+        const nextIds = Array.isArray(ids) ? ids.map(String) : [];
+        visibleLocationIds = new Set(nextIds);
+        buildLegend();
+        render();
+      },
+      getLocationColor: (id)=> locationColors.get(String(id)) || null,
+      getLocationId: (loc)=> locationIdMap.get(loc) || null
     };
   };
 
@@ -625,7 +687,86 @@
 
     const segments = buildSegments(validLocations);
     segments.forEach(updateSegmentEstimates);
-    const mapController = setupCatalogMap(mapContainer, validLocations, segments);
+    const locationColors = new Map();
+    validLocations.forEach((loc, idx)=>{
+      locationColors.set(getLocationKey(loc, idx), SEGMENT_COLOR_PALETTE[idx % SEGMENT_COLOR_PALETTE.length]);
+    });
+
+    const mapController = setupCatalogMap(mapContainer, validLocations, segments, { locationColors });
+
+    if(validLocations.length){
+      const visibilityPanel = el("div","loc-visibility-panel");
+      visibilityPanel.appendChild(el("h4",null,"Puntos visibles en el mapa"));
+
+      const actions = el("div","loc-visibility-actions");
+      const selectAllBtn = el("button","btn small","Mostrar todos");
+      const clearBtn = el("button","btn small secondary","Ocultar todos");
+      actions.appendChild(selectAllBtn);
+      actions.appendChild(clearBtn);
+
+      const summary = el("div","loc-visibility-summary");
+      const list = el("div","loc-visibility-list");
+
+      const selectedIds = new Set(validLocations.map((loc, idx)=> getLocationKey(loc, idx)));
+
+      const applySelection = ()=>{
+        if(mapController && typeof mapController.setVisibleLocations === "function"){
+          mapController.setVisibleLocations(Array.from(selectedIds));
+        }
+        const count = selectedIds.size;
+        summary.textContent = count
+          ? `${count} punto${count===1?"":"s"} visible${count===1?"":"s"} en el mapa.`
+          : "No hay puntos seleccionados.";
+      };
+
+      const rebuildList = ()=>{
+        list.innerHTML="";
+        validLocations.forEach((loc, idx)=>{
+          const id = getLocationKey(loc, idx);
+          const item = el("label","loc-visibility-item");
+          const checkbox = document.createElement("input");
+          checkbox.type = "checkbox";
+          checkbox.checked = selectedIds.has(id);
+          checkbox.onchange = ()=>{
+            if(checkbox.checked){
+              selectedIds.add(id);
+            }else{
+              selectedIds.delete(id);
+            }
+            applySelection();
+          };
+          const swatch = el("span","loc-visibility-swatch");
+          const color = locationColors.get(id) || mapController.getLocationColor(id) || SEGMENT_COLOR_PALETTE[0];
+          swatch.style.background = color;
+          const label = el("span","label", loc.nombre || loc.id || `Punto ${idx+1}`);
+          item.appendChild(checkbox);
+          item.appendChild(swatch);
+          item.appendChild(label);
+          list.appendChild(item);
+        });
+      };
+
+      selectAllBtn.onclick = ()=>{
+        validLocations.forEach((loc, idx)=> selectedIds.add(getLocationKey(loc, idx)));
+        applySelection();
+        rebuildList();
+      };
+
+      clearBtn.onclick = ()=>{
+        selectedIds.clear();
+        applySelection();
+        rebuildList();
+      };
+
+      visibilityPanel.appendChild(actions);
+      visibilityPanel.appendChild(summary);
+      visibilityPanel.appendChild(list);
+      infoSection.insertBefore(visibilityPanel, mapContainer);
+
+      rebuildList();
+      applySelection();
+    }
+
     const distancePanel = buildDistancePanel(segments, mapController);
     infoSection.appendChild(distancePanel.element);
     distancePanel.runUpdate();
