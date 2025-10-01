@@ -6,8 +6,6 @@
   const MIN_ZOOM = 2;
   const MAX_ZOOM = 18;
   const DEFAULT_MAP_VIEW = { lat: 40.4168, lng: -3.7038, zoom: 5 };
-  const WALKING_SPEED_KMPH = 4.5;
-  const DRIVING_SPEED_KMPH = 45;
   const SEGMENT_COLOR_PALETTE = [
     "#38bdf8", "#f472b6", "#34d399", "#f97316",
     "#c084fc", "#22d3ee", "#facc15", "#fb7185",
@@ -27,6 +25,51 @@
     const str = String(value ?? "").trim().replace(/,/g, ".");
     if(!str) return NaN;
     return Number(str);
+  };
+
+  const parseVehicleSpeed = (vehicle)=>{
+    if(!vehicle) return null;
+    const speed = toNumber(vehicle.speedKmph);
+    if(Number.isFinite(speed) && speed > 0) return speed;
+    if(vehicle.id === "V_WALK") return 4;
+    return null;
+  };
+
+  const sortVehiclesForDisplay = (vehicles)=>{
+    return [...(Array.isArray(vehicles) ? vehicles : [])]
+      .sort((a,b)=>(a.id==="V_WALK"?-1:0)-(b.id==="V_WALK"?-1:0)||(a.nombre||"").localeCompare(b.nombre||""));
+  };
+
+  const getDistanceForVehicle = (seg, vehicle)=>{
+    if(!seg || !vehicle) return null;
+    if(vehicle.id === "V_WALK" && Number.isFinite(seg?.distanceByProfile?.walking)){
+      return seg.distanceByProfile.walking;
+    }
+    if(Number.isFinite(seg?.distanceByProfile?.driving)){
+      return seg.distanceByProfile.driving;
+    }
+    if(Number.isFinite(seg?.distanceKm)){
+      return seg.distanceKm;
+    }
+    return null;
+  };
+
+  const computeVehicleDurations = (seg)=>{
+    const result={};
+    const vehicles = Array.isArray(state?.vehicles) ? state.vehicles : [];
+    vehicles.forEach(vehicle=>{
+      const speed = parseVehicleSpeed(vehicle);
+      if(!Number.isFinite(speed) || speed <= 0) return;
+      const distance = getDistanceForVehicle(seg, vehicle);
+      if(!Number.isFinite(distance) || distance < 0) return;
+      result[vehicle.id] = (distance / speed) * 60;
+    });
+    return result;
+  };
+
+  const updateSegmentVehicleDurations = (seg)=>{
+    if(!seg) return;
+    seg.durationByVehicleId = computeVehicleDurations(seg);
   };
 
   const clampLatLng = (lat, lng)=>{
@@ -102,15 +145,6 @@
     return R * c;
   };
 
-  const estimateTimes = (distanceKm)=>{
-    if(!Number.isFinite(distanceKm)){
-      return { drive:null, walk:null };
-    }
-    const drive = (distanceKm / DRIVING_SPEED_KMPH) * 60;
-    const walk = (distanceKm / WALKING_SPEED_KMPH) * 60;
-    return { drive, walk };
-  };
-
   const colorWithAlpha = (hex, alpha)=>{
     const m = /^#([0-9a-f]{6})$/i.exec(hex || "");
     if(!m) return hex;
@@ -145,28 +179,21 @@
         const from = locations[i];
         const to = locations[j];
         const distanceKm = haversineKm(from, to);
-        const { drive, walk } = estimateTimes(distanceKm);
-        segments.push({
+        const segment = {
           id:`${from.id||i}_${to.id||i+1}`,
           from,
           to,
           distanceKm,
-          durationDriveMin: drive,
-          durationWalkMin: walk,
+          distanceByProfile: Number.isFinite(distanceKm) ? { driving: distanceKm } : {},
           path:null,
           provider:"estimate",
           providerNote:"Estimación basada en distancia geodésica"
-        });
+        };
+        updateSegmentVehicleDurations(segment);
+        segments.push(segment);
       }
     }
     return segments;
-  };
-
-  const updateSegmentEstimates = (seg)=>{
-    if(!Number.isFinite(seg.distanceKm)) return;
-    const { drive, walk } = estimateTimes(seg.distanceKm);
-    if(!Number.isFinite(seg.durationDriveMin)) seg.durationDriveMin = drive;
-    if(!Number.isFinite(seg.durationWalkMin)) seg.durationWalkMin = walk;
   };
 
   const fetchOsrmRoute = async (from, to, profile)=>{
@@ -208,17 +235,29 @@
       }
       let usedProvider=false;
       if(driving){
-        if(Number.isFinite(driving.distanceKm)) seg.distanceKm = driving.distanceKm;
-        if(Number.isFinite(driving.durationMin)) seg.durationDriveMin = driving.durationMin;
+        if(Number.isFinite(driving.distanceKm)){
+          seg.distanceKm = driving.distanceKm;
+          seg.distanceByProfile = seg.distanceByProfile || {};
+          seg.distanceByProfile.driving = driving.distanceKm;
+        }
+        if(Number.isFinite(driving.durationMin)){
+          seg.osrmDrivingDurationMin = driving.durationMin;
+        }
         if(!seg.path && Array.isArray(driving.path) && driving.path.length) seg.path = driving.path;
         usedProvider = true;
       }
       if(walking){
-        if(Number.isFinite(walking.durationMin)) seg.durationWalkMin = walking.durationMin;
+        if(Number.isFinite(walking.distanceKm)){
+          seg.distanceByProfile = seg.distanceByProfile || {};
+          seg.distanceByProfile.walking = walking.distanceKm;
+        }
+        if(Number.isFinite(walking.durationMin)){
+          seg.osrmWalkingDurationMin = walking.durationMin;
+        }
         if(!seg.path && Array.isArray(walking.path) && walking.path.length) seg.path = walking.path;
         usedProvider = true;
       }
-      updateSegmentEstimates(seg);
+      updateSegmentVehicleDurations(seg);
       if(usedProvider){
         seg.provider = "osrm";
         seg.providerNote = `Ruta calculada con OpenStreetMap (${new Date().toLocaleString()})`;
@@ -548,20 +587,18 @@
       const directionalRows = [];
       segments.forEach(seg=>{
         directionalRows.push({
+          original: seg,
           from: seg.from,
           to: seg.to,
           distanceKm: seg.distanceKm,
-          durationDriveMin: seg.durationDriveMin,
-          durationWalkMin: seg.durationWalkMin,
           provider: seg.provider,
           providerNote: seg.providerNote
         });
         directionalRows.push({
+          original: seg,
           from: seg.to,
           to: seg.from,
           distanceKm: seg.distanceKm,
-          durationDriveMin: seg.durationDriveMin,
-          durationWalkMin: seg.durationWalkMin,
           provider: seg.provider,
           providerNote: seg.providerNote
         });
@@ -571,10 +608,15 @@
         if(fromCmp) return fromCmp;
         return getName(a.to).localeCompare(getName(b.to));
       });
+      const vehicles = sortVehiclesForDisplay(state?.vehicles || []);
       const tbl = el("table","loc-distance-table");
       const thead = el("thead");
       const thr = el("tr");
-      ["Desde","Hasta","Distancia","En vehículo","Caminando","Fuente"].forEach(label=>{
+      ["Desde","Hasta","Distancia", ...vehicles.map(v=>{
+        const speed = parseVehicleSpeed(v);
+        const baseLabel = v.nombre || v.id || "Vehículo";
+        return Number.isFinite(speed) ? `${baseLabel} (${speed} km/h)` : baseLabel;
+      }), "Fuente"].forEach(label=>{
         thr.appendChild(el("th",null,label));
       });
       thead.appendChild(thr);
@@ -585,8 +627,17 @@
         tr.appendChild(el("td",null,getName(seg.from)));
         tr.appendChild(el("td",null,getName(seg.to)));
         tr.appendChild(el("td",null,formatDistance(seg.distanceKm)));
-        tr.appendChild(el("td",null,formatDuration(seg.durationDriveMin)));
-        tr.appendChild(el("td",null,formatDuration(seg.durationWalkMin)));
+        const sourceSegment = seg.original;
+        updateSegmentVehicleDurations(sourceSegment);
+        const durations = sourceSegment.durationByVehicleId || {};
+        vehicles.forEach(vehicle=>{
+          let duration = durations[vehicle.id];
+          if(!Number.isFinite(duration)){
+            updateSegmentVehicleDurations(sourceSegment);
+            duration = sourceSegment.durationByVehicleId?.[vehicle.id];
+          }
+          tr.appendChild(el("td",null,formatDuration(duration)));
+        });
         let providerLabel = "Estimación";
         if(seg.provider === "osrm") providerLabel = "OpenStreetMap";
         tr.appendChild(el("td",null, providerLabel ));
@@ -845,9 +896,31 @@
     cont.innerHTML=""; cont.appendChild(el("h3",null,"Catálogo: Vehículos"));
     const add=el("div","row");
     const name=el("input","input"); name.placeholder="Nombre";
+    const speed=el("input","input");
+    speed.placeholder="Velocidad (km/h)";
+    speed.type="number";
+    speed.min="0";
+    speed.step="0.1";
     const b=el("button","btn","Añadir");
-    b.onclick=()=>{ const n=name.value.trim(); if(!n) return; state.vehicles.push({id:"V_"+(state.vehicles.length+1), nombre:n, locked:false}); name.value=""; emitChanged(); openCatVeh(cont); };
-    add.appendChild(name); add.appendChild(b); cont.appendChild(add);
+    b.onclick=()=>{
+      const n=name.value.trim();
+      const parsedSpeed = toNumber(speed.value);
+      if(!n) return;
+      if(!Number.isFinite(parsedSpeed) || parsedSpeed <= 0){
+        speed.classList.add("err");
+        return;
+      }
+      speed.classList.remove("err");
+      state.vehicles.push({id:"V_"+(state.vehicles.length+1), nombre:n, locked:false, speedKmph:parsedSpeed});
+      name.value="";
+      speed.value="";
+      emitChanged();
+      openCatVeh(cont);
+    };
+    add.appendChild(name);
+    add.appendChild(speed);
+    add.appendChild(b);
+    cont.appendChild(add);
 
     const tbl=el("table"); const tb=el("tbody"); tbl.appendChild(tb);
     [...state.vehicles].sort((a,b)=> (a.locked===b.locked?0:(a.locked?-1:1)) || (a.nombre||"").localeCompare(b.nombre||""))
@@ -855,8 +928,31 @@
         const i= state.vehicles.findIndex(x=>x.id===v.id);
         const tr=el("tr");
         const n=el("input","input"); n.value=v.nombre; n.oninput=()=>{ v.nombre=n.value; touch(); };
+        const s=el("input","input");
+        s.type="number";
+        s.min="0";
+        s.step="0.1";
+        const currentSpeed = parseVehicleSpeed(v);
+        s.value = Number.isFinite(currentSpeed) ? String(currentSpeed) : "";
+        s.placeholder="km/h";
+        s.oninput=()=>{
+          const val = toNumber(s.value);
+          if(Number.isFinite(val) && val>0){
+            v.speedKmph = val;
+            s.classList.remove("err");
+          }else if(s.value.trim()===""){
+            delete v.speedKmph;
+            s.classList.remove("err");
+          }else{
+            s.classList.add("err");
+          }
+          touch();
+        };
         const del=el("button","btn danger","Eliminar"); del.onclick=()=>{ state.vehicles.splice(i,1); emitChanged(); openCatVeh(cont); };
-        tr.appendChild(n); tr.appendChild(del); tb.appendChild(tr);
+        tr.appendChild(n);
+        tr.appendChild(s);
+        tr.appendChild(del);
+        tb.appendChild(tr);
         lockMark(tr, !!v.locked);
     });
     cont.appendChild(tbl);
