@@ -290,11 +290,16 @@
   const inheritedPretaskLower = (task)=>{
     const visited=new Set();
     let current=task;
+    let depth=0;
     while(current){
       if(visited.has(current.id)) break;
       visited.add(current.id);
       const parent=getTaskParent(current);
       if(!parent || parent.structureRelation !== "pre") break;
+      depth++;
+      if(depth>=2){
+        return null;
+      }
       if(parent.limitEarlyMinEnabled && Number.isFinite(parent.limitEarlyMin)){
         return roundToFive(clampToDay(parent.limitEarlyMin));
       }
