@@ -1536,24 +1536,33 @@
   };
 
   const relationInfo = (task)=>{
-    if(task.structureRelation==="post" && task.limitLateMinEnabled && Number.isFinite(task.limitLateMin)) return `≤ ${toHHMM(task.limitLateMin)}`;
-    if(task.structureRelation==="pre"){
+    if(task.structureRelation==="pre" || task.structureRelation==="post"){
       const hasLower = task.limitEarlyMinEnabled && Number.isFinite(task.limitEarlyMin);
       const hasUpper = task.limitLateMinEnabled && Number.isFinite(task.limitLateMin);
-      if(hasLower && hasUpper) return `${toHHMM(task.limitEarlyMin)} – ${toHHMM(task.limitLateMin)}`;
-      if(hasLower) return `≥ ${toHHMM(task.limitEarlyMin)}`;
-      if(hasUpper) return `≤ ${toHHMM(task.limitLateMin)}`;
+      if(hasLower || hasUpper){
+        const summary = formatRangeSummary(
+          hasLower ? task.limitEarlyMin : null,
+          hasUpper ? task.limitLateMin : null
+        );
+        if(summary) return summary;
+        return "Sin definir";
+      }
+      const defaultLabelText = defaultRangeLabel(task);
+      if(defaultLabelText) return defaultLabelText;
     }
     if(task.structureRelation==="parallel"){
       const hasLower = task.limitEarlyMinEnabled && Number.isFinite(task.limitEarlyMin);
       const hasUpper = task.limitLateMinEnabled && Number.isFinite(task.limitLateMin);
-      if(hasLower && hasUpper){
-        const lower=toHHMM(task.limitEarlyMin);
-        const upper=toHHMM(task.limitLateMin);
-        return lower===upper ? lower : `${lower} – ${upper}`;
+      if(hasLower || hasUpper){
+        const summary = formatRangeSummary(
+          hasLower ? task.limitEarlyMin : null,
+          hasUpper ? task.limitLateMin : null
+        );
+        if(summary) return summary;
+        return "Sin definir";
       }
-      if(hasLower) return `Desde ${toHHMM(task.limitEarlyMin)}`;
-      if(hasUpper) return `Hasta ${toHHMM(task.limitLateMin)}`;
+      const defaultLabelText = defaultRangeLabel(task);
+      if(defaultLabelText) return defaultLabelText;
     }
     if(task.startMin!=null) return toHHMM(task.startMin);
     if(task.durationMin!=null) return `${task.durationMin} min`;
@@ -1563,15 +1572,15 @@
   const pretaskRangeLabel = (task)=>{
     const hasLower = task.limitEarlyMinEnabled && Number.isFinite(task.limitEarlyMin);
     const hasUpper = task.limitLateMinEnabled && Number.isFinite(task.limitLateMin);
-    if(hasLower && hasUpper){
-      const lower=toHHMM(task.limitEarlyMin);
-      const upper=toHHMM(task.limitLateMin);
-      return lower===upper ? lower : `${lower} – ${upper}`;
+    if(hasLower || hasUpper){
+      const summary = formatRangeSummary(
+        hasLower ? task.limitEarlyMin : null,
+        hasUpper ? task.limitLateMin : null
+      );
+      return summary || "Sin definir";
     }
-    if(hasLower) return `Desde ${toHHMM(task.limitEarlyMin)}`;
-    if(hasUpper) return `Hasta ${toHHMM(task.limitLateMin)}`;
     if(task.limitEarlyMinEnabled || task.limitLateMinEnabled) return "Sin definir";
-    return "Por defecto";
+    return defaultRangeLabel(task) || "Por defecto";
   };
 
   const pretaskDurationLabel = (task)=>{
@@ -1579,18 +1588,62 @@
     return "Sin duración";
   };
 
+  const formatRangeSummary = (lower, upper)=>{
+    const hasLower = Number.isFinite(lower);
+    const hasUpper = Number.isFinite(upper);
+    if(hasLower && hasUpper){
+      const lowerTxt = toHHMM(lower);
+      const upperTxt = toHHMM(upper);
+      return lower===upper ? lowerTxt : `${lowerTxt} – ${upperTxt}`;
+    }
+    if(hasLower) return `Desde ${toHHMM(lower)}`;
+    if(hasUpper) return `Hasta ${toHHMM(upper)}`;
+    return null;
+  };
+
+  const computeDefaultRangeForTask = (task)=>{
+    if(!task) return null;
+    const root = rootTaskFor(task);
+    const duration = Math.max(5, roundToFive(Number(task.durationMin)||PRETASK_DEFAULT_DURATION));
+    if(task.structureRelation === "pre"){
+      const inheritedLowerBound = inheritedPretaskLower(task);
+      const minLower = inheritedLowerBound!=null ? inheritedLowerBound : defaultPretaskLower();
+      const referenceStart = pretaskReferenceStart(task, root);
+      const upper = defaultPretaskUpper(referenceStart, minLower, duration);
+      return { lower: minLower, upper };
+    }
+    if(task.structureRelation === "post"){
+      const lower = defaultPosttaskLower(root);
+      const upper = defaultPosttaskUpper(root, lower, duration);
+      return { lower, upper };
+    }
+    if(task.structureRelation === "parallel"){
+      const lower = defaultParallelLower(root);
+      const upper = defaultParallelUpper(root, lower, duration);
+      return { lower, upper };
+    }
+    return null;
+  };
+
+  const defaultRangeLabel = (task)=>{
+    const range = computeDefaultRangeForTask(task);
+    if(!range) return null;
+    const summary = formatRangeSummary(range.lower, range.upper);
+    return summary ? `Por defecto ${summary}` : "Por defecto";
+  };
+
   const parallelRangeLabel = (task)=>{
     const hasLower = task.limitEarlyMinEnabled && Number.isFinite(task.limitEarlyMin);
     const hasUpper = task.limitLateMinEnabled && Number.isFinite(task.limitLateMin);
-    if(hasLower && hasUpper){
-      const lower=toHHMM(task.limitEarlyMin);
-      const upper=toHHMM(task.limitLateMin);
-      return lower===upper ? lower : `${lower} – ${upper}`;
+    if(hasLower || hasUpper){
+      const summary = formatRangeSummary(
+        hasLower ? task.limitEarlyMin : null,
+        hasUpper ? task.limitLateMin : null
+      );
+      return summary || "Sin definir";
     }
-    if(hasLower) return `Desde ${toHHMM(task.limitEarlyMin)}`;
-    if(hasUpper) return `Hasta ${toHHMM(task.limitLateMin)}`;
     if(task.limitEarlyMinEnabled || task.limitLateMinEnabled) return "Sin definir";
-    return "Por defecto";
+    return defaultRangeLabel(task) || "Por defecto";
   };
 
   const parallelDurationLabel = (task)=>{
@@ -1888,9 +1941,51 @@
     const storedUpper=Number.isFinite(task.limitLateMin) ? roundToFive(clampToDay(task.limitLateMin)) : upperDefault;
     const minUpperForInput=Math.min(latestCap, effectiveLower + duration);
 
+    const commitBoundsChange = (updater)=>{
+      updater();
+      ensurePretaskBounds(task, rootTask);
+      touchTask(task);
+      state.project.view.pretaskEditorId = task.id;
+      renderClient();
+    };
+
+    const defaultRange = computeDefaultRangeForTask(task);
+    const defaultSummary = defaultRange ? formatRangeSummary(defaultRange.lower, defaultRange.upper) : null;
+
     const timeField=el("div","pretask-field");
     timeField.appendChild(el("span","pretask-field-label","Franja horaria"));
     const timeGrid=el("div","pretask-time-grid");
+
+    const defaultInfo=el("div","linked-default-info");
+    const defaultText=el("div","linked-default-text");
+    defaultText.appendChild(el("span","linked-default-label","Franja por defecto"));
+    defaultText.appendChild(el("span","linked-default-value", defaultSummary || "Sin datos"));
+    defaultInfo.appendChild(defaultText);
+    const defaultActions=el("div","linked-default-actions");
+    const acotarBtn=el("button","btn tiny", rangeEnabled ? "Restablecer franja" : "Acotar franja");
+    acotarBtn.type="button";
+    acotarBtn.disabled = !defaultRange;
+    acotarBtn.onclick=()=>{
+      if(!defaultRange) return;
+      if(!rangeEnabled){
+        commitBoundsChange(()=>{
+          task.limitEarlyMinEnabled = true;
+          task.limitLateMinEnabled = true;
+          task.limitEarlyMin = defaultRange.lower;
+          task.limitLateMin = defaultRange.upper;
+        });
+      }else{
+        commitBoundsChange(()=>{
+          task.limitEarlyMinEnabled = true;
+          task.limitLateMinEnabled = true;
+          task.limitEarlyMin = defaultRange.lower;
+          task.limitLateMin = defaultRange.upper;
+        });
+      }
+    };
+    defaultActions.appendChild(acotarBtn);
+    defaultInfo.appendChild(defaultActions);
+    timeGrid.appendChild(defaultInfo);
 
     const toggleWrap=el("div","pretask-time");
     const rangeToggleLabel=el("label","pretask-time-toggle");
@@ -1899,17 +1994,60 @@
     rangeToggle.checked=rangeEnabled;
     rangeToggle.onchange=()=>{
       const enabled=rangeToggle.checked;
-      task.limitEarlyMinEnabled = enabled;
-      task.limitLateMinEnabled = enabled;
-      ensurePretaskBounds(task, rootTask);
-      touchTask(task);
-      state.project.view.pretaskEditorId = task.id;
-      renderClient();
+      commitBoundsChange(()=>{
+        task.limitEarlyMinEnabled = enabled;
+        task.limitLateMinEnabled = enabled;
+        if(enabled && defaultRange){
+          if(!Number.isFinite(task.limitEarlyMin)) task.limitEarlyMin = defaultRange.lower;
+          if(!Number.isFinite(task.limitLateMin)) task.limitLateMin = defaultRange.upper;
+        }
+      });
     };
     rangeToggleLabel.appendChild(rangeToggle);
-    rangeToggleLabel.appendChild(el("span","pretask-time-label","Definir franja"));
+    rangeToggleLabel.appendChild(el("span","pretask-time-label","Editar manualmente"));
     toggleWrap.appendChild(rangeToggleLabel);
     timeGrid.appendChild(toggleWrap);
+
+    const steppers=el("div","linked-range-steppers");
+    steppers.hidden = !rangeEnabled;
+    const createStepper=(label, value, adjust)=>{
+      const wrapper=el("div","linked-range-stepper");
+      wrapper.appendChild(el("span","pretask-time-label",label));
+      const controls=el("div","linked-range-controls");
+      const minusBtn=el("button","pretask-step","−"); minusBtn.type="button";
+      minusBtn.onclick=()=> adjust(-5);
+      const valueLabel=el("span","linked-range-value", Number.isFinite(value) ? toHHMM(value) : "—");
+      const plusBtn=el("button","pretask-step","+"); plusBtn.type="button";
+      plusBtn.onclick=()=> adjust(5);
+      controls.appendChild(minusBtn);
+      controls.appendChild(valueLabel);
+      controls.appendChild(plusBtn);
+      wrapper.appendChild(controls);
+      return wrapper;
+    };
+    const adjustLower=(delta)=>{
+      commitBoundsChange(()=>{
+        task.limitEarlyMinEnabled = true;
+        task.limitLateMinEnabled = true;
+        const current = Number.isFinite(task.limitEarlyMin)
+          ? task.limitEarlyMin
+          : (defaultRange ? defaultRange.lower : minLower);
+        task.limitEarlyMin = current + delta;
+      });
+    };
+    const adjustUpper=(delta)=>{
+      commitBoundsChange(()=>{
+        task.limitEarlyMinEnabled = true;
+        task.limitLateMinEnabled = true;
+        const current = Number.isFinite(task.limitLateMin)
+          ? task.limitLateMin
+          : (defaultRange ? defaultRange.upper : upperDefault);
+        task.limitLateMin = current + delta;
+      });
+    };
+    steppers.appendChild(createStepper("Inicio mínimo", Number.isFinite(task.limitEarlyMin)?task.limitEarlyMin:(defaultRange?defaultRange.lower:null), adjustLower));
+    steppers.appendChild(createStepper("Inicio máximo", Number.isFinite(task.limitLateMin)?task.limitLateMin:(defaultRange?defaultRange.upper:null), adjustUpper));
+    timeGrid.appendChild(steppers);
 
     const lowerWrap=el("div","pretask-time");
     lowerWrap.appendChild(el("span","pretask-time-label","Franja horaria mínima"));
@@ -1978,7 +2116,8 @@
     timeGrid.appendChild(upperWrap);
 
     if(!rangeEnabled){
-      const note=el("div","pretask-time-note","Sin restricciones horarias definidas");
+      const noteText = defaultSummary ? `Usando franja por defecto: ${defaultSummary}.` : "Sin restricciones horarias definidas";
+      const note=el("div","pretask-time-note",noteText);
       timeGrid.appendChild(note);
     }
 
@@ -2029,6 +2168,23 @@
       isOpen = false;
     }
     if(isOpen) card.classList.add("open");
+
+    const removeBtn=el("button","linked-remove","×");
+    removeBtn.type="button";
+    removeBtn.title="Eliminar pretarea";
+    if(locked){
+      removeBtn.disabled = true;
+      removeBtn.classList.add("locked");
+    }else{
+      removeBtn.onclick=(ev)=>{
+        ev.stopPropagation();
+        if(!window.confirm("¿Quieres eliminar esta pretarea?")) return;
+        deleteTask(task.id);
+        state.project.view.pretaskEditorId = null;
+        renderClient();
+      };
+    }
+    card.appendChild(removeBtn);
 
     const item=el("button","nexo-item","");
     if(!isTaskComplete(task)) item.classList.add("pending");
@@ -2264,9 +2420,51 @@
     const storedUpper=Number.isFinite(task.limitLateMin) ? roundToFive(clampToDay(task.limitLateMin)) : upperDefault;
     const minUpperForInput=Math.max(effectiveLower + duration, defaultLower + duration);
 
+    const commitBoundsChange = (updater)=>{
+      updater();
+      ensurePosttaskBounds(task, rootTask);
+      touchTask(task);
+      state.project.view.posttaskEditorId = task.id;
+      renderClient();
+    };
+
+    const defaultRange = computeDefaultRangeForTask(task);
+    const defaultSummary = defaultRange ? formatRangeSummary(defaultRange.lower, defaultRange.upper) : null;
+
     const timeField=el("div","pretask-field");
     timeField.appendChild(el("span","pretask-field-label","Franja horaria"));
     const timeGrid=el("div","pretask-time-grid");
+
+    const defaultInfo=el("div","linked-default-info");
+    const defaultText=el("div","linked-default-text");
+    defaultText.appendChild(el("span","linked-default-label","Franja por defecto"));
+    defaultText.appendChild(el("span","linked-default-value", defaultSummary || "Sin datos"));
+    defaultInfo.appendChild(defaultText);
+    const defaultActions=el("div","linked-default-actions");
+    const acotarBtn=el("button","btn tiny", rangeEnabled ? "Restablecer franja" : "Acotar franja");
+    acotarBtn.type="button";
+    acotarBtn.disabled = !defaultRange;
+    acotarBtn.onclick=()=>{
+      if(!defaultRange) return;
+      if(!rangeEnabled){
+        commitBoundsChange(()=>{
+          task.limitEarlyMinEnabled = true;
+          task.limitLateMinEnabled = true;
+          task.limitEarlyMin = defaultRange.lower;
+          task.limitLateMin = defaultRange.upper;
+        });
+      }else{
+        commitBoundsChange(()=>{
+          task.limitEarlyMinEnabled = true;
+          task.limitLateMinEnabled = true;
+          task.limitEarlyMin = defaultRange.lower;
+          task.limitLateMin = defaultRange.upper;
+        });
+      }
+    };
+    defaultActions.appendChild(acotarBtn);
+    defaultInfo.appendChild(defaultActions);
+    timeGrid.appendChild(defaultInfo);
 
     const toggleWrap=el("div","pretask-time");
     const rangeToggleLabel=el("label","pretask-time-toggle");
@@ -2275,17 +2473,60 @@
     rangeToggle.checked=rangeEnabled;
     rangeToggle.onchange=()=>{
       const enabled=rangeToggle.checked;
-      task.limitEarlyMinEnabled = enabled;
-      task.limitLateMinEnabled = enabled;
-      ensurePosttaskBounds(task, rootTask);
-      touchTask(task);
-      state.project.view.posttaskEditorId = task.id;
-      renderClient();
+      commitBoundsChange(()=>{
+        task.limitEarlyMinEnabled = enabled;
+        task.limitLateMinEnabled = enabled;
+        if(enabled && defaultRange){
+          if(!Number.isFinite(task.limitEarlyMin)) task.limitEarlyMin = defaultRange.lower;
+          if(!Number.isFinite(task.limitLateMin)) task.limitLateMin = defaultRange.upper;
+        }
+      });
     };
     rangeToggleLabel.appendChild(rangeToggle);
-    rangeToggleLabel.appendChild(el("span","pretask-time-label","Definir franja"));
+    rangeToggleLabel.appendChild(el("span","pretask-time-label","Editar manualmente"));
     toggleWrap.appendChild(rangeToggleLabel);
     timeGrid.appendChild(toggleWrap);
+
+    const steppers=el("div","linked-range-steppers");
+    steppers.hidden = !rangeEnabled;
+    const createStepper=(label, value, adjust)=>{
+      const wrapper=el("div","linked-range-stepper");
+      wrapper.appendChild(el("span","pretask-time-label",label));
+      const controls=el("div","linked-range-controls");
+      const minusBtn=el("button","pretask-step","−"); minusBtn.type="button";
+      minusBtn.onclick=()=> adjust(-5);
+      const valueLabel=el("span","linked-range-value", Number.isFinite(value) ? toHHMM(value) : "—");
+      const plusBtn=el("button","pretask-step","+"); plusBtn.type="button";
+      plusBtn.onclick=()=> adjust(5);
+      controls.appendChild(minusBtn);
+      controls.appendChild(valueLabel);
+      controls.appendChild(plusBtn);
+      wrapper.appendChild(controls);
+      return wrapper;
+    };
+    const adjustLower=(delta)=>{
+      commitBoundsChange(()=>{
+        task.limitEarlyMinEnabled = true;
+        task.limitLateMinEnabled = true;
+        const current = Number.isFinite(task.limitEarlyMin)
+          ? task.limitEarlyMin
+          : (defaultRange ? defaultRange.lower : defaultLower);
+        task.limitEarlyMin = current + delta;
+      });
+    };
+    const adjustUpper=(delta)=>{
+      commitBoundsChange(()=>{
+        task.limitEarlyMinEnabled = true;
+        task.limitLateMinEnabled = true;
+        const current = Number.isFinite(task.limitLateMin)
+          ? task.limitLateMin
+          : (defaultRange ? defaultRange.upper : upperDefault);
+        task.limitLateMin = current + delta;
+      });
+    };
+    steppers.appendChild(createStepper("Inicio mínimo", Number.isFinite(task.limitEarlyMin)?task.limitEarlyMin:(defaultRange?defaultRange.lower:null), adjustLower));
+    steppers.appendChild(createStepper("Inicio máximo", Number.isFinite(task.limitLateMin)?task.limitLateMin:(defaultRange?defaultRange.upper:null), adjustUpper));
+    timeGrid.appendChild(steppers);
 
     const lowerWrap=el("div","pretask-time");
     lowerWrap.appendChild(el("span","pretask-time-label","Inicio más temprano"));
@@ -2354,7 +2595,8 @@
     timeGrid.appendChild(upperWrap);
 
     if(!rangeEnabled){
-      const note=el("div","pretask-time-note","Sin restricciones horarias definidas");
+      const noteText = defaultSummary ? `Usando franja por defecto: ${defaultSummary}.` : "Sin restricciones horarias definidas";
+      const note=el("div","pretask-time-note",noteText);
       timeGrid.appendChild(note);
     }
 
@@ -2405,6 +2647,23 @@
       isOpen = false;
     }
     if(isOpen) card.classList.add("open");
+
+    const removeBtn=el("button","linked-remove","×");
+    removeBtn.type="button";
+    removeBtn.title="Eliminar posttarea";
+    if(locked){
+      removeBtn.disabled = true;
+      removeBtn.classList.add("locked");
+    }else{
+      removeBtn.onclick=(ev)=>{
+        ev.stopPropagation();
+        if(!window.confirm("¿Quieres eliminar esta posttarea?")) return;
+        deleteTask(task.id);
+        state.project.view.posttaskEditorId = null;
+        renderClient();
+      };
+    }
+    card.appendChild(removeBtn);
 
     const item=el("button","nexo-item","");
     if(!isTaskComplete(task)) item.classList.add("pending");
@@ -2633,9 +2892,51 @@
     const maxLower=Math.max(0, DAY_MAX_MIN - duration);
     const minUpperForInput=Math.max(effectiveLower + duration, minLower + duration);
 
+    const commitBoundsChange = (updater)=>{
+      updater();
+      ensureParallelBounds(task, rootTask);
+      touchTask(task);
+      state.project.view.paralleltaskEditorId = task.id;
+      renderClient();
+    };
+
+    const defaultRange = computeDefaultRangeForTask(task);
+    const defaultSummary = defaultRange ? formatRangeSummary(defaultRange.lower, defaultRange.upper) : null;
+
     const timeField=el("div","pretask-field parallel-field");
     timeField.appendChild(el("span","pretask-field-label parallel-field-label","Franja horaria"));
     const timeGrid=el("div","pretask-time-grid parallel-time-grid");
+
+    const defaultInfo=el("div","linked-default-info");
+    const defaultText=el("div","linked-default-text");
+    defaultText.appendChild(el("span","linked-default-label","Franja por defecto"));
+    defaultText.appendChild(el("span","linked-default-value", defaultSummary || "Sin datos"));
+    defaultInfo.appendChild(defaultText);
+    const defaultActions=el("div","linked-default-actions");
+    const acotarBtn=el("button","btn tiny", rangeEnabled ? "Restablecer franja" : "Acotar franja");
+    acotarBtn.type="button";
+    acotarBtn.disabled = !defaultRange;
+    acotarBtn.onclick=()=>{
+      if(!defaultRange) return;
+      if(!rangeEnabled){
+        commitBoundsChange(()=>{
+          task.limitEarlyMinEnabled = true;
+          task.limitLateMinEnabled = true;
+          task.limitEarlyMin = defaultRange.lower;
+          task.limitLateMin = defaultRange.upper;
+        });
+      }else{
+        commitBoundsChange(()=>{
+          task.limitEarlyMinEnabled = true;
+          task.limitLateMinEnabled = true;
+          task.limitEarlyMin = defaultRange.lower;
+          task.limitLateMin = defaultRange.upper;
+        });
+      }
+    };
+    defaultActions.appendChild(acotarBtn);
+    defaultInfo.appendChild(defaultActions);
+    timeGrid.appendChild(defaultInfo);
 
     const toggleWrap=el("div","pretask-time parallel-time");
     const rangeToggleLabel=el("label","pretask-time-toggle parallel-time-toggle");
@@ -2644,17 +2945,60 @@
     rangeToggle.checked=rangeEnabled;
     rangeToggle.onchange=()=>{
       const enabled=rangeToggle.checked;
-      task.limitEarlyMinEnabled = enabled;
-      task.limitLateMinEnabled = enabled;
-      ensureParallelBounds(task, rootTask);
-      touchTask(task);
-      state.project.view.paralleltaskEditorId = task.id;
-      renderClient();
+      commitBoundsChange(()=>{
+        task.limitEarlyMinEnabled = enabled;
+        task.limitLateMinEnabled = enabled;
+        if(enabled && defaultRange){
+          if(!Number.isFinite(task.limitEarlyMin)) task.limitEarlyMin = defaultRange.lower;
+          if(!Number.isFinite(task.limitLateMin)) task.limitLateMin = defaultRange.upper;
+        }
+      });
     };
     rangeToggleLabel.appendChild(rangeToggle);
-    rangeToggleLabel.appendChild(el("span","pretask-time-label parallel-time-label","Definir manualmente"));
+    rangeToggleLabel.appendChild(el("span","pretask-time-label parallel-time-label","Editar manualmente"));
     toggleWrap.appendChild(rangeToggleLabel);
     timeGrid.appendChild(toggleWrap);
+
+    const steppers=el("div","linked-range-steppers");
+    steppers.hidden = !rangeEnabled;
+    const createStepper=(label, value, adjust)=>{
+      const wrapper=el("div","linked-range-stepper");
+      wrapper.appendChild(el("span","pretask-time-label parallel-time-label",label));
+      const controls=el("div","linked-range-controls");
+      const minusBtn=el("button","pretask-step","−"); minusBtn.type="button";
+      minusBtn.onclick=()=> adjust(-5);
+      const valueLabel=el("span","linked-range-value", Number.isFinite(value) ? toHHMM(value) : "—");
+      const plusBtn=el("button","pretask-step","+"); plusBtn.type="button";
+      plusBtn.onclick=()=> adjust(5);
+      controls.appendChild(minusBtn);
+      controls.appendChild(valueLabel);
+      controls.appendChild(plusBtn);
+      wrapper.appendChild(controls);
+      return wrapper;
+    };
+    const adjustLower=(delta)=>{
+      commitBoundsChange(()=>{
+        task.limitEarlyMinEnabled = true;
+        task.limitLateMinEnabled = true;
+        const current = Number.isFinite(task.limitEarlyMin)
+          ? task.limitEarlyMin
+          : (defaultRange ? defaultRange.lower : defaultLower);
+        task.limitEarlyMin = current + delta;
+      });
+    };
+    const adjustUpper=(delta)=>{
+      commitBoundsChange(()=>{
+        task.limitEarlyMinEnabled = true;
+        task.limitLateMinEnabled = true;
+        const current = Number.isFinite(task.limitLateMin)
+          ? task.limitLateMin
+          : (defaultRange ? defaultRange.upper : defaultUpper);
+        task.limitLateMin = current + delta;
+      });
+    };
+    steppers.appendChild(createStepper("Inicio", Number.isFinite(task.limitEarlyMin)?task.limitEarlyMin:(defaultRange?defaultRange.lower:null), adjustLower));
+    steppers.appendChild(createStepper("Fin", Number.isFinite(task.limitLateMin)?task.limitLateMin:(defaultRange?defaultRange.upper:null), adjustUpper));
+    timeGrid.appendChild(steppers);
 
     const lowerWrap=el("div","pretask-time parallel-time");
     lowerWrap.appendChild(el("span","pretask-time-label parallel-time-label","Inicio"));
@@ -2723,7 +3067,8 @@
     timeGrid.appendChild(upperWrap);
 
     if(!rangeEnabled){
-      const note=el("div","pretask-time-note parallel-time-note","Usa la franja de la tarea principal");
+      const noteText = defaultSummary ? `Usando franja por defecto: ${defaultSummary}.` : "Usa la franja de la tarea principal";
+      const note=el("div","pretask-time-note parallel-time-note",noteText);
       timeGrid.appendChild(note);
     }
 
@@ -2743,6 +3088,23 @@
       isOpen = false;
     }
     if(isOpen) card.classList.add("open");
+
+    const removeBtn=el("button","linked-remove","×");
+    removeBtn.type="button";
+    removeBtn.title="Eliminar tarea concurrente";
+    if(locked){
+      removeBtn.disabled = true;
+      removeBtn.classList.add("locked");
+    }else{
+      removeBtn.onclick=(ev)=>{
+        ev.stopPropagation();
+        if(!window.confirm("¿Quieres eliminar esta tarea concurrente?")) return;
+        deleteTask(task.id);
+        state.project.view.paralleltaskEditorId = null;
+        renderClient();
+      };
+    }
+    card.appendChild(removeBtn);
 
     const item=el("button","nexo-item","");
     if(!isTaskComplete(task)) item.classList.add("pending");
@@ -2906,28 +3268,35 @@
     addDetail("Duración", duration);
 
     if(task.structureRelation==="pre"){
+      const defaultRange = computeDefaultRangeForTask(task);
       const lowerText = task.limitEarlyMinEnabled && Number.isFinite(task.limitEarlyMin)
         ? toHHMM(task.limitEarlyMin)
-        : "Sin restricción";
+        : (defaultRange ? toHHMM(defaultRange.lower) : "Sin restricción");
       const upperText = task.limitLateMinEnabled && Number.isFinite(task.limitLateMin)
         ? toHHMM(task.limitLateMin)
-        : "Sin restricción";
+        : (defaultRange ? toHHMM(defaultRange.upper) : "Sin restricción");
       addDetail("Franja horaria mínima", lowerText);
       addDetail("Franja horaria máxima", upperText);
     }else if(task.structureRelation==="parallel"){
+      const defaultRange = computeDefaultRangeForTask(task);
       const lowerText = task.limitEarlyMinEnabled && Number.isFinite(task.limitEarlyMin)
         ? toHHMM(task.limitEarlyMin)
-        : "Sin restricción";
+        : (defaultRange ? toHHMM(defaultRange.lower) : "Sin restricción");
       const upperText = task.limitLateMinEnabled && Number.isFinite(task.limitLateMin)
         ? toHHMM(task.limitLateMin)
-        : "Sin restricción";
+        : (defaultRange ? toHHMM(defaultRange.upper) : "Sin restricción");
       addDetail("Inicio", lowerText);
       addDetail("Fin", upperText);
     }else if(task.structureRelation==="post"){
+      const defaultRange = computeDefaultRangeForTask(task);
+      const earlyText = task.limitEarlyMinEnabled && Number.isFinite(task.limitEarlyMin)
+        ? toHHMM(task.limitEarlyMin)
+        : (defaultRange ? toHHMM(defaultRange.lower) : "Sin restricción");
       const lateText = task.limitLateMinEnabled && Number.isFinite(task.limitLateMin)
         ? toHHMM(task.limitLateMin)
-        : "Sin restricción";
-      addDetail("Límite tarde", lateText);
+        : (defaultRange ? toHHMM(defaultRange.upper) : "Sin restricción");
+      addDetail("Inicio mínimo", earlyText);
+      addDetail("Inicio máximo", lateText);
     }
 
     if(task.actionType===ACTION_TYPE_TRANSPORT){
