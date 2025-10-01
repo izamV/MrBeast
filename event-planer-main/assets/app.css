@@ -647,7 +647,10 @@ table.matlist td.act{width:120px}
 .loc-map-location{position:absolute;transform:translate(-50%,-50%);display:flex;flex-direction:column;align-items:center;gap:.25rem;text-shadow:0 1px 2px rgba(15,23,42,.7)}
 .loc-map-dot{width:10px;height:10px;border-radius:9999px;background:#f97316;border:2px solid rgba(15,23,42,.85)}
 .loc-map-label{background:rgba(15,23,42,.85);padding:.15rem .45rem;border-radius:9999px;white-space:nowrap}
-.loc-map-segment{position:absolute;transform:translate(-50%,-50%);background:rgba(15,23,42,.88);padding:.4rem .6rem;border-radius:.5rem;line-height:1.35;white-space:pre-line;box-shadow:0 8px 20px rgba(15,23,42,.35);max-width:220px;text-align:center}
+.loc-map-legend{margin-top:.75rem;display:flex;flex-wrap:wrap;gap:.5rem 1rem;padding:.4rem .25rem;border-radius:.75rem;background:rgba(15,23,42,.45);backdrop-filter:blur(6px);box-shadow:0 8px 20px rgba(15,23,42,.28);color:#e2e8f0}
+.loc-map-legend-item{display:flex;align-items:center;gap:.4rem;padding:.35rem .6rem;border-radius:.6rem;background:rgba(15,23,42,.72)}
+.loc-map-legend-swatch{width:12px;height:12px;border-radius:9999px;box-shadow:0 0 0 2px rgba(15,23,42,.65)}
+.loc-map-legend-label{white-space:nowrap}
 .loc-distance-panel{display:flex;flex-direction:column;gap:.75rem;background:rgba(15,23,42,.6);padding:1rem;border-radius:.75rem;box-shadow:0 1px 0 0 rgba(148,163,184,.12) inset}
 .loc-distance-controls{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center}
 .loc-distance-controls .btn.small{min-width:auto}
