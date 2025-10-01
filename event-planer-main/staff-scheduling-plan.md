@@ -5,6 +5,11 @@ Este documento describe el plan para construir un módulo dentro de **Catálogo 
 ## Objetivo
 Asignar todas las tareas respetando ventanas de ejecución, duración, ubicación y dependencias, evitando solapamientos, minimizando tiempos muertos y previniendo inicios de turno excesivamente tempranos. También se deben bloquear las tareas ya asignadas manualmente antes de optimizar el resto.
 
+Las prioridades de la solución, en orden estricto, serán:
+1. Completar todas las tareas (principales, pre, post y concurrentes) generando automáticamente tareas de transporte cuando haya cambios de localización entre ellas.
+2. Hacer los horarios lo más eficientes posible, reduciendo tiempos muertos y minimizando la cantidad y duración de transportes necesarios.
+3. Empezar lo más tarde posible siempre que se cumplan los puntos anteriores, priorizando ventanas que permitan un descanso adecuado al staff.
+
 ## Enfoque General
 1. Consolidar tareas principales, pre-tareas, post-tareas y concurrentes en un modelo uniforme.
 2. Inicializar calendarios por miembro bloqueando tareas preasignadas.
@@ -17,6 +22,7 @@ Asignar todas las tareas respetando ventanas de ejecución, duración, ubicació
 ### 1. Consolidación de Datos
 - Construir un agregador que recoja todas las tareas relacionadas con cada cliente.
 - Normalizar cada tarea con campos como `id`, `tipo`, `cliente`, `miembroPreasignado`, `ventanaInicio`, `ventanaFin`, `duracion`, `ubicacion`, `dependencias`, `prioridad`, `flexibilidad` y `estado`.
+- Incorporar en el modelo la información logística de las ubicaciones: distancias, tiempos de desplazamiento estimados y medios de transporte disponibles (vehículos, transporte público, traslado a pie). Esta información alimentará la generación de tareas de transporte.
 - Incorporar la generación automática de una **franja predefinida** por tarea vinculada (pre, post o concurrente) para limitar las selecciones manuales. Esta franja nace a partir de una ventana global `01:00-23:59` y se acota con: (a) la hora de inicio o fin de la tarea principal según corresponda, (b) la suma de las duraciones de las tareas dependientes en niveles previos y (c) la propia duración de la tarea actual. Por ejemplo, para una pretarea de nivel 3 cuya tarea principal va de 13:00 a 14:00, con pretareas de nivel 1 y 2 de 30 y 40 minutos respectivamente y duración propia de 50 minutos, la franja resultante será `01:00-11:00`. La pretarea de nivel 2 en ese escenario tendrá franja `01:00-11:50`. Para post tareas se utiliza la hora de finalización de la tarea principal como punto de partida hacia `23:59`, mientras que las tareas concurrentes heredan el inicio de la tarea principal y se extienden hasta `23:59`.
 - Registrar que esta franja predefinida será la que se muestre por defecto en la interfaz para todas las pre-tareas, post-tareas y concurrentes, sirviendo como referencia visual inmediata y como límite para futuras selecciones manuales cuando esa funcionalidad se active. Cualquier cambio en la duración de la tarea principal o de una tarea vinculada recalculará automáticamente la franja base.
 - Validar previamente que las ventanas y duraciones sean coherentes y que las ubicaciones existan en el catálogo.
@@ -30,6 +36,7 @@ Asignar todas las tareas respetando ventanas de ejecución, duración, ubicació
 
 ### 3. Algoritmo de Asignación y Optimización
 - Ordenar inicialmente las tareas por criterios como fecha límite, duración, prioridad y flexibilidad.
+- Detectar transiciones de localización entre tareas asignadas a un mismo miembro y generar tareas de transporte intermedias con duración según el medio elegido y las distancias registradas. Estas tareas aparecerán únicamente en el horario del staff y heredarán las restricciones necesarias para respetar el orden de ejecución.
 - Asignar heurísticamente buscando ventanas compatibles, penalizando huecos grandes, traslados extensos y comienzos demasiado tempranos.
 - Cumplir dependencias entre pre-tareas, tareas principales, post-tareas y tareas concurrentes.
 - Ejecutar una búsqueda local para intercambiar o reubicar tareas y reducir huecos.
