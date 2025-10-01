@@ -3485,7 +3485,7 @@
   const SCHEDULE_AI_MODEL = "gpt-4o-mini";
   const SCHEDULE_AI_RESPONSE_FORMAT = { type: "json_object" };
   const SCHEDULE_AI_STORAGE_KEY = "eventplan.openai.key";
-  const SCHEDULE_AI_SYSTEM_PROMPT = `Eres un planificador de eventos. Recibirás un objeto JSON con el proyecto, el staff, las localizaciones y todas las tareas bloqueadas de un cliente. Debes proponer el horario de cada miembro del equipo devolviendo únicamente un JSON con el formato {"staff":[{"staffId":"ID_DEL_STAFF","sessions":[{"taskId":"ID_DE_TAREA","start":"HH:MM","end":"HH:MM"}]}],"warnings":[]}. Usa horas en formato 24h HH:MM, respeta los identificadores originales y no inventes tareas nuevas. Si una tarea no puede programarse incluye una advertencia en el array warnings o en warnings del miembro correspondiente. Prioriza que cada miembro del staff empiece lo más tarde posible sin comprometer la correcta ejecución de todas las tareas y minimiza los huecos vacíos dentro de su turno.`;
+  const SCHEDULE_AI_SYSTEM_PROMPT = `Eres un planificador de eventos. Recibirás un objeto JSON con el proyecto, el staff, las localizaciones y todas las tareas bloqueadas de un cliente. Debes proponer el horario de cada miembro del equipo devolviendo únicamente un JSON con el formato {"staff":[{"staffId":"ID_DEL_STAFF","sessions":[{"taskId":"ID_DE_TAREA","start":"HH:MM","end":"HH:MM"}]}],"warnings":[]}. Usa horas en formato 24h HH:MM, respeta los identificadores originales y no inventes tareas nuevas. Si una tarea no puede programarse incluye una advertencia en el array warnings o en warnings del miembro correspondiente. Prioriza que cada miembro del staff empiece lo más tarde posible sin comprometer la correcta ejecución de todas las tareas y minimiza los huecos vacíos dentro de su turno. Nunca programes dos tareas que se solapen para la misma persona y evita bloques separados por horas muertas: desplaza las tareas hacia el final de su ventana permitida para que el turno sea lo más compacto posible.`;
 
   const scheduleAiTimeToMinutes = (value)=>{
     if(value==null || value==="") return null;
@@ -3551,7 +3551,9 @@
       parametros:{
         criterios:[
           "El horario de todos los miembros del staff debe comenzar lo más tarde posible sin impedir que las tareas se completen correctamente.",
-          "Debe minimizarse el número y la duración de huecos vacíos dentro del turno de cada miembro del staff."
+          "Debe minimizarse el número y la duración de huecos vacíos dentro del turno de cada miembro del staff.",
+          "No puede haber solapes entre tareas asignadas al mismo miembro del staff; si una tarea requiere un recurso ocupado, asígnala a otra persona o explica el conflicto en las advertencias.",
+          "Cuando varias tareas pertenecen al mismo miembro del staff, reordénalas o retrásalas dentro de sus ventanas permitidas para que formen un bloque continuo sin horas muertas antes de tareas obligatorias más tardías."
         ]
       },
       staff:staffList.map(st=>({
