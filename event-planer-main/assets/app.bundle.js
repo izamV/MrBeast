@@ -1713,7 +1713,28 @@
         return;
       }
       const getName = (loc)=> loc?.nombre || loc?.id || "-";
-      const sortedSegments = [...segments].sort((a,b)=>{
+      const directionalRows = [];
+      segments.forEach(seg=>{
+        directionalRows.push({
+          from: seg.from,
+          to: seg.to,
+          distanceKm: seg.distanceKm,
+          durationDriveMin: seg.durationDriveMin,
+          durationWalkMin: seg.durationWalkMin,
+          provider: seg.provider,
+          providerNote: seg.providerNote
+        });
+        directionalRows.push({
+          from: seg.to,
+          to: seg.from,
+          distanceKm: seg.distanceKm,
+          durationDriveMin: seg.durationDriveMin,
+          durationWalkMin: seg.durationWalkMin,
+          provider: seg.provider,
+          providerNote: seg.providerNote
+        });
+      });
+      const sortedRows = directionalRows.sort((a,b)=>{
         const fromCmp = getName(a.from).localeCompare(getName(b.from));
         if(fromCmp) return fromCmp;
         return getName(a.to).localeCompare(getName(b.to));
@@ -1727,7 +1748,7 @@
       thead.appendChild(thr);
       tbl.appendChild(thead);
       const tbody = el("tbody");
-      sortedSegments.forEach(seg=>{
+      sortedRows.forEach(seg=>{
         const tr = el("tr");
         tr.appendChild(el("td",null,getName(seg.from)));
         tr.appendChild(el("td",null,getName(seg.to)));
