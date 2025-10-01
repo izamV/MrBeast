@@ -21,6 +21,16 @@
     }
     return null;
   };
+  const parsePositiveNumber = (value)=>{
+    if(typeof value === "number" && Number.isFinite(value) && value>0) return value;
+    if(typeof value === "string"){
+      const normalized=value.trim().replace(/,/g,".");
+      if(!normalized) return null;
+      const num=Number(normalized);
+      if(Number.isFinite(num) && num>0) return num;
+    }
+    return null;
+  };
   // Estado básico
   if(!root.state){
     root.state = {
@@ -296,6 +306,19 @@
       }
     });
     st.vehicles=st.vehicles||[]; st.staff=st.staff||[]; st.sessions=st.sessions||{CLIENTE:[]};
+    const DEFAULT_VEHICLE_SPEED_KMPH=45;
+    st.vehicles.forEach(v=>{
+      const parsed=parsePositiveNumber(v.speedKmph);
+      if(v.id==="V_WALK"){
+        v.speedKmph = parsed ?? 4;
+      }else if(parsed!=null){
+        v.speedKmph = parsed;
+      }else if(typeof v.speedKmph === "undefined"){
+        v.speedKmph = DEFAULT_VEHICLE_SPEED_KMPH;
+      }else{
+        delete v.speedKmph;
+      }
+    });
     st.horaInicial=st.horaInicial||{}; st.localizacionInicial=st.localizacionInicial||{};
     Object.keys(st.horaInicial).forEach(pid=>{
       const parsed=parseMinuteValue(st.horaInicial[pid]);
@@ -336,11 +359,26 @@
       window.ensureSeedsCore = function(){
         const st=state;
         st.taskTypes=st.taskTypes||[]; st.vehicles=st.vehicles||[];
-        const upsert=(arr,obj)=>{ const i=arr.findIndex(x=>x.id===obj.id); if(i<0) arr.push(obj); else { const t=arr[i]; t.nombre=t.nombre||obj.nombre; if(obj.color) t.color=t.color||obj.color; t.locked=true; } };
+        const upsert=(arr,obj)=>{
+          const i=arr.findIndex(x=>x.id===obj.id);
+          if(i<0){
+            arr.push({ ...obj });
+          }else{
+            const t=arr[i];
+            t.nombre=t.nombre||obj.nombre;
+            if(obj.color) t.color=t.color||obj.color;
+            if(typeof obj.speedKmph!=="undefined" && parsePositiveNumber(t.speedKmph)==null){
+              t.speedKmph=obj.speedKmph;
+            }
+            t.locked=true;
+          }
+        };
         upsert(st.taskTypes,{id:root.EP_IDS.TRANSP,nombre:"Transporte",color:"#22d3ee",locked:true});
         upsert(st.taskTypes,{id:root.EP_IDS.MONT,  nombre:"Montaje",   color:"#a3e635",locked:true});
         upsert(st.taskTypes,{id:root.EP_IDS.DESM,  nombre:"Desmontaje",color:"#f59e0b",locked:true});
-        upsert(st.vehicles, {id:"V_WALK",nombre:"Caminando",locked:true});
+        upsert(st.vehicles, {id:"V_WALK",nombre:"Caminando",locked:true,speedKmph:4});
+        const walk=st.vehicles.find(v=>v.id==="V_WALK");
+        if(walk) walk.speedKmph = parsePositiveNumber(walk.speedKmph) ?? 4;
         const order=id=>({[root.EP_IDS.TRANSP]:0,[root.EP_IDS.MONT]:1,[root.EP_IDS.DESM]:2}[id]??9);
         st.taskTypes=st.taskTypes.filter((x,i,a)=>a.findIndex(y=>y.id===x.id)===i).sort((a,b)=>order(a.id)-order(b.id)||(a.nombre||"").localeCompare(b.nombre||""));
         st.vehicles=st.vehicles.filter((x,i,a)=>a.findIndex(y=>y.id===x.id)===i).sort((a,b)=>(a.id==="V_WALK"?-1:0)-(b.id==="V_WALK"?-1:0)||(a.nombre||"").localeCompare(b.nombre||""));
