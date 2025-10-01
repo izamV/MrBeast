@@ -1342,22 +1342,26 @@
 
   const buildSegments = (locations)=>{
     const segments=[];
-    for(let i=0; i<locations.length-1; i++){
-      const from = locations[i];
-      const to = locations[i+1];
-      const distanceKm = haversineKm(from, to);
-      const { drive, walk } = estimateTimes(distanceKm);
-      segments.push({
-        id:`${from.id||i}_${to.id||i+1}`,
-        from,
-        to,
-        distanceKm,
-        durationDriveMin: drive,
-        durationWalkMin: walk,
-        path:null,
-        provider:"estimate",
-        providerNote:"Estimación basada en distancia geodésica"
-      });
+    for(let i=0; i<locations.length; i++){
+      for(let j=i+1; j<locations.length; j++){
+        const from = locations[i];
+        const to = locations[j];
+        const fromId = from.id || `loc_${i}`;
+        const toId = to.id || `loc_${j}`;
+        const distanceKm = haversineKm(from, to);
+        const { drive, walk } = estimateTimes(distanceKm);
+        segments.push({
+          id:`${fromId}_${toId}`,
+          from,
+          to,
+          distanceKm,
+          durationDriveMin: drive,
+          durationWalkMin: walk,
+          path:null,
+          provider:"estimate",
+          providerNote:"Estimación basada en distancia geodésica"
+        });
+      }
     }
     return segments;
   };
