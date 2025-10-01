@@ -317,7 +317,7 @@
       const parent=getTaskParent(current);
       if(!parent) break;
       if(parent.structureRelation === "pre"){
-        if(parent.limitLateMinEnabled && Number.isFinite(parent.limitLateMin)){
+        if(Number.isFinite(parent.limitLateMin)){
           return roundToFive(clampToDay(parent.limitLateMin));
         }
         if(Number.isFinite(parent.startMin)){
