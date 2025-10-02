@@ -3482,7 +3482,9 @@
     return roundToFive(Math.max(0, Math.min(DAY_MAX_MIN, Number(value)||0)));
   };
 
-  const DEFAULT_DAY_LOWER_MIN = 60;
+  const projectStartCandidate = getInitialMinuteFor("CLIENTE");
+  const ABSOLUTE_DAY_MIN = 0;
+  const DEFAULT_DAY_LOWER_MIN = projectStartCandidate!=null ? normalizeMinute(projectStartCandidate) : 60;
   const DEFAULT_DAY_UPPER_MIN = DAY_MAX_MIN;
 
   const ensureDurationValue = (task)=>{
@@ -3552,7 +3554,7 @@
       const latestEndBase=(rootStart!=null) ? rootStart - ancestorsDuration : DEFAULT_DAY_UPPER_MIN;
       const latestEnd=normalizeMinute(Math.min(DEFAULT_DAY_UPPER_MIN, latestEndBase));
       let earliestStart = latestEnd!=null ? latestEnd - (duration + descendantsDuration) : DEFAULT_DAY_LOWER_MIN;
-      if(earliestStart!=null) earliestStart = normalizeMinute(Math.max(DEFAULT_DAY_LOWER_MIN, earliestStart));
+      if(earliestStart!=null) earliestStart = normalizeMinute(Math.max(ABSOLUTE_DAY_MIN, earliestStart));
       const startMin = earliestStart;
       const endMin = startMin!=null ? normalizeMinute(startMin + duration) : null;
       let startMax = latestEnd!=null ? normalizeMinute(Math.max(startMin ?? DEFAULT_DAY_LOWER_MIN, latestEnd - duration)) : startMin;
@@ -3571,7 +3573,7 @@
       const ancestorsDuration=sumRelationAncestorDurations(task, "post");
       const descendantsDuration=sumRelationDescendantsDuration(task, "post");
       const earliestStartBase=(rootEnd!=null) ? rootEnd + ancestorsDuration : DEFAULT_DAY_LOWER_MIN;
-      const startMin=normalizeMinute(Math.max(DEFAULT_DAY_LOWER_MIN, earliestStartBase));
+      const startMin=normalizeMinute(Math.max(ABSOLUTE_DAY_MIN, earliestStartBase));
       const endMin=startMin!=null ? normalizeMinute(startMin + duration) : null;
       const latestEndBase=(rootEnd!=null) ? rootEnd + ancestorsDuration + duration + descendantsDuration : DEFAULT_DAY_UPPER_MIN;
       let endMax=normalizeMinute(Math.min(DEFAULT_DAY_UPPER_MIN, latestEndBase));
@@ -4153,17 +4155,22 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
         scheduledTaskIds.add(task.id);
         sessions.push(sessionEntry);
       });
-      const normalizedSessions=insertMissingTransportsForStaff(staffId, sessions, staffWarnings);
+      const normalizationResult=insertMissingTransportsForStaff(staffId, sessions, staffWarnings);
+      const normalizedSessions=normalizationResult.sessions;
+      normalizationResult.skippedTaskIds.forEach(id=> scheduledTaskIds.delete(id));
       if(!normalizedSessions.length && !staffWarnings.size){
         staffWarnings.add("La IA no generó sesiones para este miembro del staff.");
       }
       sessionsByStaff[staffId]=normalizedSessions;
-      warningsByStaff[staffId]=[...staffWarnings];
+      warningsByStaff[staffId]=staffWarnings;
     });
+
+    const validationResult=validateAndPruneSchedule(sessionsByStaff, warningsByStaff, scheduledTaskIds, taskById);
+    validationResult.removedTaskIds.forEach(id=> scheduledTaskIds.delete(id));
 
     staffList.forEach(st=>{
       if(!sessionsByStaff[st.id]) sessionsByStaff[st.id]=[];
-      if(!warningsByStaff[st.id]) warningsByStaff[st.id]=[];
+      if(!warningsByStaff[st.id]) warningsByStaff[st.id]=new Set();
     });
 
     state.sessions = state.sessions || {};
@@ -4172,6 +4179,7 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
     });
 
     const metricsByStaff={};
+    const warningsByStaffOutput={};
     staffList.forEach(st=>{
       const sessions=(sessionsByStaff[st.id]||[]).slice().sort((a,b)=> (a.startMin||0)-(b.startMin||0));
       state.sessions[st.id]=sessions;
@@ -4186,7 +4194,10 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
         if(state.localizacionInicial && Object.prototype.hasOwnProperty.call(state.localizacionInicial, st.id)) delete state.localizacionInicial[st.id];
       }
       metricsByStaff[st.id]=computeMetricsFromSessions(sessions);
-      (warningsByStaff[st.id]||[]).forEach(msg=>globalWarnings.add(String(msg)));
+      const warnSet=warningsByStaff[st.id] instanceof Set ? warningsByStaff[st.id] : new Set(warningsByStaff[st.id]||[]);
+      const warnArray=[...warnSet];
+      warningsByStaffOutput[st.id]=warnArray;
+      warnArray.forEach(msg=>globalWarnings.add(String(msg)));
     });
 
     const extraWarnings=Array.isArray(result?.warnings)?result.warnings:[];
@@ -4201,7 +4212,7 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
 
     state.scheduleMeta.generatedAt=new Date().toISOString();
     state.scheduleMeta.lastMethod="IA";
-    state.scheduleMeta.warningsByStaff=warningsByStaff;
+    state.scheduleMeta.warningsByStaff=warningsByStaffOutput;
     state.scheduleMeta.metricsByStaff=metricsByStaff;
     state.scheduleMeta.globalMetrics=computeGlobalMetrics(metricsByStaff, staffList);
     state.scheduleMeta.globalWarnings=[...globalWarnings];
@@ -4683,15 +4694,54 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
       return sa-sb;
     });
     const augmented=[];
+    const skippedTaskIds=new Set();
     const initialLocation=state?.localizacionInicial?.[staffId] || null;
     let previousDestination=initialLocation;
     let availableEnd=null;
+
+    const ensurePreviousFinishesBy = (targetEnd)=>{
+      if(!augmented.length) return false;
+      const previousSession=augmented[augmented.length-1];
+      if(!previousSession) return false;
+      const previousType=normalizeActionTypeValue(previousSession.actionType);
+      if(previousType===ACTION_TYPE_TRANSPORT) return false;
+      const previousInfo=ensureSessionTiming(previousSession);
+      if(previousInfo.end==null || previousInfo.duration==null || previousInfo.start==null){
+        return false;
+      }
+      if(previousInfo.end<=targetEnd){
+        availableEnd=previousInfo.end;
+        return true;
+      }
+      const previousTask=getTaskForSession(previousSession);
+      const window=previousTask?deriveTaskWindow(previousTask):{ startMin:null, lower:null };
+      const floor=minuteValueOrNull(previousSession.__sequenceFloor);
+      const earliestAllowed=Math.max(
+        floor ?? ABSOLUTE_DAY_MIN,
+        window.startMin ?? window.lower ?? ABSOLUTE_DAY_MIN
+      );
+      const candidateStart=normalizeMinute(targetEnd - previousInfo.duration);
+      if(candidateStart==null || candidateStart<earliestAllowed) return false;
+      const evaluation=evaluateSessionShift(previousTask, candidateStart, previousInfo.duration);
+      if(!evaluation.ok) return false;
+      if(floor!=null && evaluation.start<floor) return false;
+      shiftSessionStartTo(previousSession, evaluation.start);
+      const updated=ensureSessionTiming(previousSession);
+      availableEnd=updated.end;
+      return updated.end!=null && updated.end<=targetEnd;
+    };
+
+    const skipSession = (sessionTask)=>{
+      if(sessionTask?.id) skippedTaskIds.add(sessionTask.id);
+    };
+
     sorted.forEach((session)=>{
       let info=ensureSessionTiming(session);
       const sessionType=normalizeActionTypeValue(session?.actionType);
       const sessionTask=getTaskForSession(session);
 
       if(sessionType===ACTION_TYPE_TRANSPORT){
+        session.__sequenceFloor = availableEnd;
         adjustSessionStartIfNeeded(
           session,
           availableEnd,
@@ -4711,56 +4761,49 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
       if(needsTransport){
         const vehicleHint=session.vehicleId || sessionTask?.vehicleId || null;
         const travelInfo=estimateTravelInfo(previousDestination, currentOrigin, vehicleHint);
+        const originName=locationNameById(previousDestination)||previousDestination||"Origen";
+        const destName=locationNameById(currentOrigin)||currentOrigin||"Destino";
         if(!travelInfo){
-          const originName=locationNameById(previousDestination)||previousDestination||"Origen";
-          const destName=locationNameById(currentOrigin)||currentOrigin||"Destino";
           if(staffWarnings) staffWarnings.add(`Transporte ${originName} → ${destName}: no se pudo estimar la duración.`);
-        }else if(travelInfo.duration>0){
+          skipSession(sessionTask);
+          return;
+        }
+        if(travelInfo.duration>0){
           const arrival=info.start;
           if(arrival==null){
-            const originName=locationNameById(previousDestination)||previousDestination||"Origen";
             if(staffWarnings) staffWarnings.add(`${describeSession(session)}: falta hora de inicio para insertar transporte desde ${originName}.`);
-          }else{
-            const earliestStart=availableEnd;
-            let transportStart=normalizeMinute(arrival - travelInfo.duration);
-            if(earliestStart!=null && (transportStart==null || transportStart<earliestStart)){
-              const desiredStart=normalizeMinute((earliestStart ?? 0) + travelInfo.duration);
-              const adjusted=tryShiftSessionStart(
-                session,
-                desiredStart,
-                sessionTask,
-                staffWarnings,
-                (success, reason, appliedStart)=>{
-                  const originName=locationNameById(previousDestination)||previousDestination||"Origen";
-                  if(success){
-                    return `${describeSession(session)}: ajustado a ${toHHMM(appliedStart)} para respetar el transporte desde ${originName}.`;
-                  }
-                  const detail=reason || "restricciones del catálogo";
-                  return `${describeSession(session)}: no se puede mover para insertar transporte (${detail}).`;
-                }
-              );
-              info=ensureSessionTiming(session);
-              if(adjusted){
-                transportStart=normalizeMinute(info.start - travelInfo.duration);
-              }
-            }
-            if(transportStart!=null && (earliestStart==null || transportStart>=earliestStart)){
-              const transportSession=buildTransportSessionBetween(previousDestination, currentOrigin, info.start, staffWarnings, travelInfo);
-              if(transportSession){
-                augmented.push(transportSession);
-                const transportEnd=minuteValueOrNull(transportSession.endMin);
-                if(transportEnd!=null) availableEnd=transportEnd;
-                previousDestination=getSessionDestination(transportSession) || currentOrigin;
-              }
-            }else if(staffWarnings){
-              const originName=locationNameById(previousDestination)||previousDestination||"Origen";
-              const destName=locationNameById(currentOrigin)||currentOrigin||"Destino";
-              staffWarnings.add(`${describeSession(session)}: no hay hueco para el transporte ${originName} → ${destName}.`);
+            skipSession(sessionTask);
+            return;
+          }
+          const earliestStart=availableEnd;
+          const transportStart=normalizeMinute(arrival - travelInfo.duration);
+          if(transportStart==null){
+            if(staffWarnings) staffWarnings.add(`${describeSession(session)}: transporte ${originName} → ${destName} con horario inválido.`);
+            skipSession(sessionTask);
+            return;
+          }
+          if(earliestStart!=null && transportStart<earliestStart){
+            const adjusted=ensurePreviousFinishesBy(transportStart);
+            if(!adjusted){
+              if(staffWarnings) staffWarnings.add(`${describeSession(session)}: no hay hueco para el transporte ${originName} → ${destName}.`);
+              skipSession(sessionTask);
+              return;
             }
           }
+          const transportSession=buildTransportSessionBetween(previousDestination, currentOrigin, arrival, staffWarnings, travelInfo);
+          if(!transportSession){
+            skipSession(sessionTask);
+            return;
+          }
+          transportSession.__sequenceFloor = availableEnd;
+          augmented.push(transportSession);
+          const transportEnd=minuteValueOrNull(transportSession.endMin);
+          if(transportEnd!=null) availableEnd=transportEnd;
+          previousDestination=getSessionDestination(transportSession) || currentOrigin;
         }
       }
 
+      session.__sequenceFloor = availableEnd;
       adjustSessionStartIfNeeded(
         session,
         availableEnd,
@@ -4772,7 +4815,142 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
       augmented.push(session);
       previousDestination=getSessionDestination(session) || previousDestination;
     });
-    return augmented;
+
+    augmented.forEach(item=>{ if(Object.prototype.hasOwnProperty.call(item, "__sequenceFloor")) delete item.__sequenceFloor; });
+
+    return { sessions:augmented, skippedTaskIds };
+  };
+
+  const validateAndPruneSchedule = (sessionsByStaff, warningsByStaff, scheduledTaskIds, taskById)=>{
+    const removals=new Map();
+    const removedTaskIds=new Set();
+
+    const ensureWarningsSet = (staffId)=>{
+      if(!warningsByStaff[staffId]) warningsByStaff[staffId]=new Set();
+      const current=warningsByStaff[staffId];
+      if(current instanceof Set) return current;
+      const set=new Set(Array.isArray(current)?current:[]);
+      warningsByStaff[staffId]=set;
+      return set;
+    };
+
+    const markRemoval = (staffId, session, message)=>{
+      if(!session) return;
+      if(staffId){
+        const warnSet=ensureWarningsSet(staffId);
+        if(message) warnSet.add(String(message));
+        if(!removals.has(staffId)) removals.set(staffId, new Set());
+        removals.get(staffId).add(session);
+      }
+      const taskId=session.inheritFromId;
+      if(taskId){
+        removedTaskIds.add(taskId);
+        scheduledTaskIds.delete(taskId);
+      }
+    };
+
+    const isRemoved = (staffId, session)=> removals.has(staffId) && removals.get(staffId).has(session);
+
+    const taskSessions=new Map();
+    for(const [staffId, list] of Object.entries(sessionsByStaff||{})){
+      (list||[]).forEach(session=>{
+        if(!session?.inheritFromId) return;
+        const info=ensureSessionTiming(session);
+        const existing=taskSessions.get(session.inheritFromId);
+        if(!existing || (info.start!=null && (existing.info.start==null || info.start<existing.info.start))){
+          taskSessions.set(session.inheritFromId, { staffId, session, info });
+        }
+      });
+    }
+
+    for(const [taskId, task] of taskById.entries()){
+      if(!task?.structureParentId) continue;
+      const currentEntry=taskSessions.get(taskId);
+      if(!currentEntry) continue;
+      const parentTask=taskById.get(task.structureParentId) || null;
+      const parentEntry=parentTask ? taskSessions.get(parentTask.id) : null;
+      const staffId=currentEntry.staffId;
+      const childSession=currentEntry.session;
+      if(!parentEntry){
+        const parentLabel=parentTask ? labelForTask(parentTask) : task.structureParentId;
+        markRemoval(staffId, childSession, `${labelForTask(task)}: depende de ${parentLabel} que no está programada.`);
+        continue;
+      }
+      const parentSession=parentEntry.session;
+      const parentInfo=ensureSessionTiming(parentSession);
+      const childInfo=ensureSessionTiming(childSession);
+      if(parentInfo.end==null || childInfo.start==null){
+        markRemoval(staffId, childSession, `${labelForTask(task)}: horario incompleto para validar dependencia con ${labelForTask(parentTask)}.`);
+        continue;
+      }
+      const originId=getSessionDestination(parentSession) || parentTask?.locationId || null;
+      const destinationId=getSessionOrigin(childSession, originId);
+      const vehicleHint=childSession.vehicleId || task?.vehicleId || null;
+      const travelInfo=estimateTravelInfo(originId, destinationId, vehicleHint);
+      const originName=locationNameById(originId)||originId||"Origen";
+      const destName=locationNameById(destinationId)||destinationId||"Destino";
+      if(!travelInfo){
+        markRemoval(staffId, childSession, `${labelForTask(task)}: no se pudo estimar transporte ${originName} → ${destName} tras ${labelForTask(parentTask)}.`);
+        continue;
+      }
+      const required=Math.max(0, Number(travelInfo.duration)||0);
+      if(parentInfo.end + required>childInfo.start){
+        markRemoval(staffId, childSession, `${labelForTask(task)}: comienza antes de completar el transporte ${originName} → ${destName} tras ${labelForTask(parentTask)}.`);
+      }
+    }
+
+    for(const [staffId, list] of Object.entries(sessionsByStaff||{})){
+      const ordered=(list||[]).slice().sort((a,b)=>{
+        const sa=minuteValueOrNull(a?.startMin);
+        const sb=minuteValueOrNull(b?.startMin);
+        return (sa ?? Number.POSITIVE_INFINITY) - (sb ?? Number.POSITIVE_INFINITY);
+      });
+      for(let i=0;i<ordered.length-1;i+=1){
+        const current=ordered[i];
+        const next=ordered[i+1];
+        if(isRemoved(staffId, current) || isRemoved(staffId, next)) continue;
+        const currentInfo=ensureSessionTiming(current);
+        const nextInfo=ensureSessionTiming(next);
+        if(currentInfo.end==null || nextInfo.start==null){
+          markRemoval(staffId, next, `${describeSession(next)}: horario incompleto después de ${describeSession(current)}.`);
+          continue;
+        }
+        const originId=getSessionDestination(current) || null;
+        const destinationId=getSessionOrigin(next, originId);
+        const vehicleHint=next.vehicleId || getTaskForSession(next)?.vehicleId || null;
+        const travelInfo=estimateTravelInfo(originId, destinationId, vehicleHint);
+        const originName=locationNameById(originId)||originId||"Origen";
+        const destName=locationNameById(destinationId)||destinationId||"Destino";
+        if(!travelInfo){
+          markRemoval(staffId, next, `${describeSession(next)}: no se pudo estimar transporte ${originName} → ${destName} tras ${describeSession(current)}.`);
+          continue;
+        }
+        const required=Math.max(0, Number(travelInfo.duration)||0);
+        if(currentInfo.end + required>nextInfo.start){
+          markRemoval(staffId, next, `${describeSession(next)}: requiere ${required} min para desplazarse desde ${originName} antes de iniciar tras ${describeSession(current)}.`);
+        }
+      }
+    }
+
+    for(const [staffId, list] of Object.entries(sessionsByStaff||{})){
+      if(!list) continue;
+      const filtered=list.filter(session=> !isRemoved(staffId, session));
+      const cleaned=[];
+      for(let i=0;i<filtered.length;i+=1){
+        const session=filtered[i];
+        const type=normalizeActionTypeValue(session?.actionType);
+        if(type===ACTION_TYPE_TRANSPORT){
+          const next=filtered[i+1] || null;
+          if(!next || normalizeActionTypeValue(next?.actionType)===ACTION_TYPE_TRANSPORT){
+            continue;
+          }
+        }
+        cleaned.push(session);
+      }
+      sessionsByStaff[staffId]=cleaned;
+    }
+
+    return { removedTaskIds };
   };
 
   const computeGlobalMetrics = (metricsByStaff, staffList)=>{
