@@ -3482,10 +3482,33 @@
     return roundToFive(Math.max(0, Math.min(DAY_MAX_MIN, Number(value)||0)));
   };
 
-  const SCHEDULE_AI_MODEL = "gpt-4o-mini";
+  const SCHEDULE_AI_MODEL = "gpt-4o";
   const SCHEDULE_AI_RESPONSE_FORMAT = { type: "json_object" };
   const SCHEDULE_AI_STORAGE_KEY = "eventplan.openai.key";
-  const SCHEDULE_AI_SYSTEM_PROMPT = `Eres un planificador de eventos. Recibirás un objeto JSON con el proyecto, el staff, las localizaciones y todas las tareas bloqueadas de un cliente. Debes proponer el horario de cada miembro del equipo devolviendo únicamente un JSON con el formato {"staff":[{"staffId":"ID_DEL_STAFF","sessions":[{"taskId":"ID_DE_TAREA","start":"HH:MM","end":"HH:MM"}]}],"warnings":[]}. Usa horas en formato 24h HH:MM, respeta los identificadores originales y no inventes tareas nuevas. Si una tarea no puede programarse incluye una advertencia en el array warnings o en warnings del miembro correspondiente. Prioriza que cada miembro del staff empiece lo más tarde posible sin comprometer la correcta ejecución de todas las tareas y minimiza los huecos vacíos dentro de su turno. Nunca programes dos tareas que se solapen para la misma persona y evita bloques separados por horas muertas: desplaza las tareas hacia el final de su ventana permitida para que el turno sea lo más compacto posible.`;
+  const SCHEDULE_AI_SYSTEM_PROMPT = `Eres un planificador de eventos. Recibirás un JSON con la siguiente estructura:
+- "proyecto": metadatos del evento.
+- "parametros": recordatorios de criterios de optimización.
+- "staff": personas disponibles con sus identificadores.
+- "localizaciones": posibles ubicaciones de trabajo.
+- "tareas": lista de actividades. Cada tarea incluye:
+  - "id" y "nombre" para identificarla.
+  - "tipo" y "tipoAccion" que describen si es principal, pre, post o concurrente.
+  - "duracionMin" (en minutos) con la duración exacta.
+  - "inicioFijo" y/o "finFijo": si aparecen, la tarea debe respetar exactamente esos valores.
+  - "limiteInferior" y "limiteSuperior": definen la ventana flexible permitida cuando no hay inicio/fin fijos. Empieza lo más tarde posible dentro de estos límites sin incumplir dependencias.
+  - "dependeDe" y "jerarquia": indican relaciones entre tareas para mantener el orden, pero no implican compartir personal.
+  - "localizacion": ubicación donde sucede.
+  - "asignadoA": lista de miembros preasignados. Sólo esas personas deben ejecutar la tarea. Que una tarea sea pre, post o concurrente de otra NO significa que el staff se repita; si no figura en "asignadoA", no la programes para esa persona.
+  - "notas": información adicional.
+
+Debes devolver únicamente un JSON con el formato {"staff":[{"staffId":"ID_DEL_STAFF","sessions":[{"taskId":"ID_DE_TAREA","start":"HH:MM","end":"HH:MM"}]}],"warnings":[]}. Usa siempre formato 24h HH:MM.
+
+Objetivos en orden de prioridad:
+1. Respeta las asignaciones, duraciones, ventanas horarias y dependencias. Si una tarea tiene "inicioFijo" o "finFijo", colócala exactamente ahí. Para el resto, programa dentro de ["limiteInferior", "limiteSuperior"], retrasando el inicio lo máximo posible sin impedir la ejecución de otras tareas relacionadas.
+2. Evita solapamientos en la agenda de cada persona y comprueba las transiciones entre tareas: si una actividad no cabe sin invadir otra o requiere tiempo extra, explícitalo en "warnings".
+3. Minimiza huecos vacíos y procura que cada turno sea compacto, desplazando las tareas hacia el final de su ventana válida.
+
+Si no puedes programar una tarea o detectas un conflicto, documenta el problema en "warnings" globales o en los del miembro implicado. No inventes nuevas tareas ni alteres los identificadores.`;
 
   const scheduleAiTimeToMinutes = (value)=>{
     if(value==null || value==="") return null;
