@@ -4133,7 +4133,6 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
     const locationList=(state.locations||[]);
     const locationById=new Map(locationList.map(loc=>[String(loc.id), loc]));
     const locationByName=new Map(locationList.map(loc=>[(loc.nombre||loc.id||"").toLowerCase(), loc]));
-    const scheduledTaskIds=new Set();
     const resolveLocationIdFromHint = (hint)=>{
       if(hint==null) return null;
       const text=String(hint).trim();
@@ -4235,10 +4234,7 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
           if(vehicleId) sessionEntry.vehicleId=vehicleId;
         }
 
-        const enforced=enforceSessionConstraintsForTask(task, sessionEntry, staffWarnings);
-        if(!enforced) return;
-        scheduledTaskIds.add(task.id);
-        sessions.push(enforced);
+        sessions.push(sessionEntry);
       });
 
       sessionsByStaff[staffId]=sessions.sort((a,b)=>{
@@ -4257,39 +4253,6 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
     state.sessions = state.sessions || {};
     Object.keys(state.sessions).forEach(key=>{
       if(key!=="CLIENTE" && !sessionsByStaff[key]) delete state.sessions[key];
-    });
-
-    Object.entries(sessionsByStaff).forEach(([staffId, list])=>{
-      const warnSet=warningsByStaff[staffId] instanceof Set
-        ? warningsByStaff[staffId]
-        : new Set(warningsByStaff[staffId]||[]);
-      warningsByStaff[staffId]=warnSet;
-      const { sessions:augmented, skippedTaskIds } = insertMissingTransportsForStaff(staffId, list, warnSet);
-      sessionsByStaff[staffId]=augmented;
-      skippedTaskIds.forEach(taskId=> scheduledTaskIds.delete(taskId));
-    });
-
-    validateAndPruneSchedule(sessionsByStaff, warningsByStaff, scheduledTaskIds, taskById);
-
-    tasks.forEach(task=>{
-      if(!task || !task.id) return;
-      if(!taskRequiresPresence(task)) return;
-      if(scheduledTaskIds.has(task.id)) return;
-      const message=`${labelForTask(task)}: no se pudo programar dentro de sus restricciones.`;
-      const assigned=Array.isArray(task.assignedStaffIds)?task.assignedStaffIds.filter(Boolean):[];
-      if(assigned.length){
-        assigned.forEach(id=>{
-          if(!staffById.has(id)){
-            globalWarnings.add(message);
-            return;
-          }
-          const warnSet=warningsByStaff[id] instanceof Set ? warningsByStaff[id] : new Set(warningsByStaff[id]||[]);
-          warnSet.add(message);
-          warningsByStaff[id]=warnSet;
-        });
-        return;
-      }
-      globalWarnings.add(message);
     });
 
     const metricsByStaff={};
