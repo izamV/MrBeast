@@ -6,6 +6,7 @@ Implementar un solver capaz de generar, a partir de un único `STATE` en formato
 ## Flujo general
 1. Recibir un único payload `STATE` con la estructura actual (proyecto, parámetros, staff, localizaciones, vehículos, transportes y tareas).
 2. Normalizar los datos de tareas y cadenas (milestones, pre, post, parallel) respetando ventanas duras, duraciones y dependencias.
+   - En la normalización registrar la profundidad de cada tarea en la cadena para aplicar las reglas: las pre-tareas de nivel 1 solo quedan habilitadas mientras existan pre-tareas de nivel 2 pendientes y las de nivel 2 requieren la finalización previa de sus tareas de nivel 3; en cadenas post el orden es inverso (nivel 3 depende de nivel 2, nivel 2 de nivel 1 y nivel 1 de la tarea principal). Las tareas parallel pueden comenzar siempre que la tarea raíz esté en ejecución.
 3. Calcular los desplazamientos requeridos entre localizaciones antes de fijar cada bloque de trabajo. Si `transportes.requerido` es verdadero, el solver debe:
    - Determinar el origen y destino con base en la localización actual del miembro del staff y la localización de la próxima tarea.
    - Seleccionar el vehículo indicado en la tarea o, en su defecto, el `vehiculoPorDefecto`.
