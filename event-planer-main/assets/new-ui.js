@@ -3482,33 +3482,164 @@
     return roundToFive(Math.max(0, Math.min(DAY_MAX_MIN, Number(value)||0)));
   };
 
+  const DEFAULT_DAY_LOWER_MIN = 60;
+  const DEFAULT_DAY_UPPER_MIN = DAY_MAX_MIN;
+
+  const ensureDurationValue = (task)=>{
+    const raw = Number(task?.durationMin);
+    if(Number.isFinite(raw) && raw>0){
+      return Math.max(5, roundToFive(raw));
+    }
+    return 60;
+  };
+
+  const sumDurations = (tasks)=> (tasks||[]).reduce((acc, item)=> acc + ensureDurationValue(item), 0);
+
+  const getRootStartAndEnd = (root)=>{
+    if(!root) return { start:null, end:null };
+    const start = Number.isFinite(Number(root.startMin)) ? normalizeMinute(Number(root.startMin)) : null;
+    let end = Number.isFinite(Number(root.endMin)) ? normalizeMinute(Number(root.endMin)) : null;
+    if(end==null && start!=null && Number.isFinite(Number(root.durationMin))){
+      end = normalizeMinute(start + ensureDurationValue(root));
+    }
+    return { start, end };
+  };
+
+  const deriveTaskWindow = (task)=>{
+    const relation=(task?.structureRelation)||"milestone";
+    if(relation==="milestone") return { lower:null, upper:null };
+    const breadcrumb=getBreadcrumb(task);
+    const root=breadcrumb[0]||null;
+    const { start:rootStart, end:rootEnd } = getRootStartAndEnd(root);
+    const idx=breadcrumb.findIndex(step=>step.id===task?.id);
+    if(idx<0) return { lower:null, upper:null };
+    const duration=ensureDurationValue(task);
+    const derived={ lower:null, upper:null };
+    if(relation==="pre"){
+      if(rootStart!=null){
+        const chain=breadcrumb.slice(1, idx+1);
+        const used=sumDurations(chain);
+        let latest = normalizeMinute(rootStart - used);
+        if(latest!=null){
+          const minUpper = DEFAULT_DAY_LOWER_MIN + duration;
+          if(latest < minUpper) latest = normalizeMinute(minUpper);
+          if(rootStart!=null && latest>rootStart) latest = rootStart;
+        }
+        derived.upper = latest;
+      }
+      derived.lower = DEFAULT_DAY_LOWER_MIN;
+    }else if(relation==="post"){
+      if(rootEnd!=null){
+        const preceding=breadcrumb.slice(1, idx);
+        let earliest = normalizeMinute(rootEnd + sumDurations(preceding));
+        if(earliest!=null && earliest > DEFAULT_DAY_UPPER_MIN - duration){
+          earliest = normalizeMinute(Math.max(0, DEFAULT_DAY_UPPER_MIN - duration));
+        }
+        derived.lower = earliest;
+      }
+      derived.upper = DEFAULT_DAY_UPPER_MIN;
+    }else if(relation==="parallel"){
+      if(rootStart!=null) derived.lower = rootStart;
+      if(rootEnd!=null){
+        derived.upper = rootEnd;
+      }else if(rootStart!=null){
+        derived.upper = normalizeMinute(rootStart + ensureDurationValue(root));
+      }else{
+        derived.upper = DEFAULT_DAY_UPPER_MIN;
+      }
+    }
+    if(derived.lower!=null && derived.upper!=null){
+      if(derived.upper < derived.lower){
+        derived.lower = normalizeMinute(Math.max(0, derived.upper - duration));
+      }
+      if(derived.upper!=null && derived.lower!=null && derived.upper - derived.lower < duration){
+        derived.lower = normalizeMinute(Math.max(0, derived.upper - duration));
+      }
+    }
+    return derived;
+  };
+
+  const toHHMMOrNull = (value)=>{
+    if(value==null || value==="") return null;
+    const num=Number(value);
+    if(!Number.isFinite(num)) return null;
+    return toHHMM(num);
+  };
+
+  const toNumberOrNullStrict = (value)=>{
+    if(value===null || value===undefined || value==="") return null;
+    const num=Number(value);
+    return Number.isFinite(num) ? num : null;
+  };
+
+  const toRadians = (degrees)=> Number.isFinite(Number(degrees)) ? Number(degrees) * Math.PI / 180 : null;
+
+  const haversineDistanceKm = (a, b)=>{
+    if(!a || !b) return null;
+    const lat1=toRadians(a.lat);
+    const lon1=toRadians(a.lng);
+    const lat2=toRadians(b.lat);
+    const lon2=toRadians(b.lng);
+    if(lat1==null || lon1==null || lat2==null || lon2==null) return null;
+    const dLat=lat2-lat1;
+    const dLon=lon2-lon1;
+    const sinLat=Math.sin(dLat/2);
+    const sinLon=Math.sin(dLon/2);
+    const aVal=sinLat*sinLat + Math.cos(lat1)*Math.cos(lat2)*sinLon*sinLon;
+    const c=2*Math.atan2(Math.sqrt(aVal), Math.sqrt(1-aVal));
+    const EARTH_RADIUS_KM=6371;
+    return EARTH_RADIUS_KM * c;
+  };
+
+  const estimateTravelMinutes = (distanceKm, speedKmph)=>{
+    if(!Number.isFinite(distanceKm) || distanceKm<0) return null;
+    if(distanceKm===0) return 0;
+    if(!Number.isFinite(speedKmph) || speedKmph<=0) return null;
+    const minutes=(distanceKm/ speedKmph)*60;
+    return normalizeMinute(Math.max(5, roundToFive(minutes)));
+  };
+
+  const buildTravelMatrix = (locations, vehicles)=>{
+    const result=[];
+    locations.forEach(origin=>{
+      locations.forEach(destination=>{
+        const distanceKm=haversineDistanceKm(origin, destination);
+        vehicles.forEach(vehicle=>{
+          const duration=estimateTravelMinutes(distanceKm, vehicle.speedKmph);
+          if(duration==null) return;
+          result.push({
+            origenId: origin.id,
+            destinoId: destination.id,
+            vehiculoId: vehicle.id,
+            distanciaKm: Number.isFinite(distanceKm)?Number(distanceKm):null,
+            duracionMin: duration
+          });
+        });
+      });
+    });
+    return result;
+  };
+
   const SCHEDULE_AI_MODEL = "gpt-4o";
   const SCHEDULE_AI_RESPONSE_FORMAT = { type: "json_object" };
   const SCHEDULE_AI_STORAGE_KEY = "eventplan.openai.key";
   const SCHEDULE_AI_SYSTEM_PROMPT = `Eres un planificador de eventos. Recibirás un JSON con la siguiente estructura:
-- "proyecto": metadatos del evento.
+- "proyecto": metadatos del evento, incluyendo "inicioDia" (hora sugerida de arranque) y "localizacionInicial".
 - "parametros": recordatorios de criterios de optimización.
-- "staff": personas disponibles con sus identificadores.
-- "localizaciones": posibles ubicaciones de trabajo.
-- "tareas": lista de actividades. Cada tarea incluye:
-  - "id" y "nombre" para identificarla.
-  - "tipo" y "tipoAccion" que describen si es principal, pre, post o concurrente.
-  - "duracionMin" (en minutos) con la duración exacta.
-  - "inicioFijo" y/o "finFijo": si aparecen, la tarea debe respetar exactamente esos valores.
-  - "limiteInferior" y "limiteSuperior": definen la ventana flexible permitida cuando no hay inicio/fin fijos. Empieza lo más tarde posible dentro de estos límites sin incumplir dependencias.
-  - "dependeDe" y "jerarquia": indican relaciones entre tareas para mantener el orden, pero no implican compartir personal.
-  - "localizacion": ubicación donde sucede.
-  - "asignadoA": lista de miembros preasignados. Sólo esas personas deben ejecutar la tarea. Que una tarea sea pre, post o concurrente de otra NO significa que el staff se repita; si no figura en "asignadoA", no la programes para esa persona.
-  - "notas": información adicional.
+- "staff": miembros disponibles con sus identificadores, roles, "inicioPreferido" y "localizacionInicial".
+- "localizaciones": lugares posibles, cada uno con "lat" y "lng" para estimar desplazamientos.
+- "vehiculos": medios de transporte con su "velocidadKmph" y otros atributos.
+- "transportes": reglas logísticas (si son requeridos, "vehiculoPorDefecto" y "tiempos" estimados por vehículo entre pares de localizaciones).
+- "tareas": lista de actividades. Cada tarea incluye "id", "nombre", "tipo" (milestone, pre, post, parallel), "tipoAccion", "duracionMin", "inicioFijo"/"finFijo" cuando aplica, ventanas "limiteInferior"/"limiteSuperior" ya calculadas junto con una "ventana.derivada" de referencia, jerarquía, dependencia, asignaciones de staff y su localización.
 
 Debes devolver únicamente un JSON con el formato {"staff":[{"staffId":"ID_DEL_STAFF","sessions":[{"taskId":"ID_DE_TAREA","start":"HH:MM","end":"HH:MM"}]}],"warnings":[]}. Usa siempre formato 24h HH:MM.
 
 Objetivos en orden de prioridad:
-1. Respeta las asignaciones, duraciones, ventanas horarias y dependencias. Si una tarea tiene "inicioFijo" o "finFijo", colócala exactamente ahí. Para el resto, programa dentro de ["limiteInferior", "limiteSuperior"], retrasando el inicio lo máximo posible sin impedir la ejecución de otras tareas relacionadas.
-2. Evita solapamientos en la agenda de cada persona y comprueba las transiciones entre tareas: si una actividad no cabe sin invadir otra o requiere tiempo extra, explícitalo en "warnings".
-3. Minimiza huecos vacíos y procura que cada turno sea compacto, desplazando las tareas hacia el final de su ventana válida.
+1. Respeta asignaciones, duraciones, dependencias y ventanas. Las tareas con "inicioFijo" o "finFijo" son inamovibles. Para el resto, programa dentro de la ventana final proporcionada (usa la derivada cuando no existan límites explícitos) empezando lo más tarde posible sin bloquear tareas relacionadas.
+2. Evita solapamientos por persona. Comprueba transiciones: si una tarea empieza en una localización distinta a la del bloque anterior, inserta un tramo de transporte antes de que comience la nueva tarea. Usa la duración estimada en "transportes.tiempos"; selecciona el vehículo adecuado (o el "vehiculoPorDefecto" si no se especifica) y marca la sesión con "actionType":"TRANSPORTE", además de "originId" y "destinationId". No uses "taskId" en los transportes generados por ti.
+3. Minimiza huecos vacíos y procura bloques compactos sin adelantar inicios innecesariamente.
 
-Si no puedes programar una tarea o detectas un conflicto, documenta el problema en "warnings" globales o en los del miembro implicado. No inventes nuevas tareas ni alteres los identificadores.`;
+Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualquier conflicto, documenta el problema en "warnings" globales o específicos del miembro. No inventes tareas nuevas distintas de los transportes auxiliares ni alteres identificadores existentes.`;
 
   const scheduleAiTimeToMinutes = (value)=>{
     if(value==null || value==="") return null;
@@ -3533,35 +3664,86 @@ Si no puedes programar una tarea o detectas un conflicto, documenta el problema 
     const tasks=getTaskList();
     const staffList=(state.staff||[]);
     const staffById=new Map(staffList.map(st=>[st.id, st]));
+    const locationsPayload=(state.locations||[]).map(loc=>{
+      const lat=toNumberOrNullStrict(loc.lat);
+      const lng=toNumberOrNullStrict(loc.lng);
+      return {
+        id:loc.id,
+        nombre:loc.nombre||loc.id,
+        lat:lat,
+        lng:lng,
+        direccion:loc.direccion||null
+      };
+    });
+    const locationById=new Map(locationsPayload.map(loc=>[loc.id, loc]));
+    const vehiclesPayload=(state.vehicles||[]).map(veh=>{
+      const speed=toNumberOrNullStrict(veh.speedKmph);
+      const capacity=toNumberOrNullStrict(veh.capacidad ?? veh.capacity);
+      return {
+        id:veh.id,
+        nombre:veh.nombre||veh.id,
+        velocidadKmph:speed,
+        speedKmph:speed,
+        capacidad:capacity,
+        tipo:veh.tipo||veh.category||null
+      };
+    });
+    const travelMatrix=buildTravelMatrix(
+      locationsPayload,
+      vehiclesPayload.filter(v=>Number.isFinite(v.speedKmph) && v.speedKmph>0)
+    );
+    const projectInitialMinute = getInitialMinuteFor("CLIENTE");
     const taskPayload=tasks.map(task=>{
       const breadcrumb=getBreadcrumb(task).map(step=>({
         id:step.id,
         nombre:step.actionName||step.nombre||step.id,
         tipo:step.structureRelation||"milestone"
       }));
+      const derivedWindow=deriveTaskWindow(task);
+      const hasLower = !!(task.limitEarlyMinEnabled && Number.isFinite(task.limitEarlyMin));
+      const hasUpper = !!(task.limitLateMinEnabled && Number.isFinite(task.limitLateMin));
+      const effectiveLower = hasLower ? normalizeMinute(Number(task.limitEarlyMin)) : derivedWindow.lower;
+      const effectiveUpper = hasUpper ? normalizeMinute(Number(task.limitLateMin)) : derivedWindow.upper;
       const assigned=(task.assignedStaffIds||[]).map(id=>{
         const st=staffById.get(id);
         return st?{id:st.id,nombre:st.nombre||st.id}:{id,nombre:id};
       });
-      const location = task.locationId ? {
+      const location = task.locationId ? (locationById.get(task.locationId) || {
         id:task.locationId,
-        nombre:locationNameById(task.locationId)||task.locationId
-      } : null;
+        nombre:locationNameById(task.locationId)||task.locationId,
+        lat:null,
+        lng:null
+      }) : null;
+      const root=rootTaskFor(task);
+      const depth=breadcrumb.length?breadcrumb.length-1:0;
       return {
         id:task.id,
         nombre:task.actionName||labelForTask(task),
         tipo:task.structureRelation||"milestone",
         tipoAccion:task.actionType||ACTION_TYPE_NORMAL,
-        duracionMin:Number.isFinite(Number(task.durationMin))?Number(task.durationMin):null,
+        duracionMin:ensureDurationValue(task),
         inicioFijo:task.startMin!=null?toHHMM(task.startMin):null,
         finFijo:task.endMin!=null?toHHMM(task.endMin):null,
-        limiteInferior:Number.isFinite(Number(task.limitEarlyMin))?toHHMM(task.limitEarlyMin):null,
-        limiteSuperior:Number.isFinite(Number(task.limitLateMin))?toHHMM(task.limitLateMin):null,
+        limiteInferior:effectiveLower!=null?toHHMM(effectiveLower):null,
+        limiteSuperior:effectiveUpper!=null?toHHMM(effectiveUpper):null,
         dependeDe:task.structureParentId||null,
         raiz:rootTaskFor(task)?.id||null,
+        raizNombre:root? (root.actionName||root.nombre||root.id) : null,
         localizacion:location,
         asignadoA:assigned,
         jerarquia:breadcrumb,
+        profundidad:depth,
+        bloqueada:!!task.locked,
+        ventana:{
+          original:{
+            inferior:hasLower?toHHMM(task.limitEarlyMin):null,
+            superior:hasUpper?toHHMM(task.limitLateMin):null
+          },
+          derivada:{
+            inferior:derivedWindow.lower!=null?toHHMM(derivedWindow.lower):null,
+            superior:derivedWindow.upper!=null?toHHMM(derivedWindow.upper):null
+          }
+        },
         notas:task.comentario||""
       };
     });
@@ -3569,7 +3751,9 @@ Si no puedes programar una tarea o detectas un conflicto, documenta el problema 
       proyecto:{
         nombre:state.project?.nombre||"",
         fecha:state.project?.fecha||"",
-        zonaHoraria:state.project?.tz||""
+        zonaHoraria:state.project?.tz||"",
+        inicioDia:projectInitialMinute!=null?toHHMM(projectInitialMinute):null,
+        localizacionInicial:state.localizacionInicial?.CLIENTE||null
       },
       parametros:{
         criterios:[
@@ -3582,12 +3766,24 @@ Si no puedes programar una tarea o detectas un conflicto, documenta el problema 
       staff:staffList.map(st=>({
         id:st.id,
         nombre:st.nombre||st.id,
-        rol:st.rol||"STAFF"
+        rol:st.rol||"STAFF",
+        inicioPreferido:toHHMMOrNull(getInitialMinuteFor(st.id)),
+        localizacionInicial:state.localizacionInicial?.[st.id]||null
       })),
-      localizaciones:(state.locations||[]).map(loc=>({
-        id:loc.id,
-        nombre:loc.nombre||loc.id
-      })),
+      localizaciones:locationsPayload,
+      vehiculos:vehiclesPayload,
+      transportes:{
+        requerido:true,
+        vehiculoPorDefecto:defaultVehicleId(),
+        tiempos:travelMatrix.map(item=>({
+          origenId:item.origenId,
+          destinoId:item.destinoId,
+          vehiculoId:item.vehiculoId,
+          duracionMin:item.duracionMin,
+          duracionHHMM:toHHMMOrNull(item.duracionMin),
+          distanciaKm:item.distanciaKm!=null?Number(item.distanciaKm.toFixed(2)):null
+        }))
+      },
       tareas:taskPayload
     };
   };
@@ -3658,6 +3854,41 @@ Si no puedes programar una tarea o detectas un conflicto, documenta el problema 
     }
   };
 
+  const normalizeActionTypeValue = (value)=>{
+    if(!value && value!==0) return null;
+    const text=String(value).trim().toUpperCase();
+    if(!text) return null;
+    if(text.includes("TRANSP")) return ACTION_TYPE_TRANSPORT;
+    return ACTION_TYPE_NORMAL;
+  };
+
+  const pickFirstString = (source, keys)=>{
+    if(!source) return null;
+    for(const key of keys){
+      const value=source[key];
+      if(value==null) continue;
+      const text=String(value).trim();
+      if(text) return text;
+    }
+    return null;
+  };
+
+  const resolveVehicleId = (session)=>{
+    const candidates=[
+      session?.vehicleId,
+      session?.vehiculoId,
+      session?.vehicle,
+      session?.vehiculo,
+      session?.modo
+    ].map(val=> val==null?null:String(val).trim()).filter(Boolean);
+    const vehicles=(state.vehicles||[]);
+    for(const candidate of candidates){
+      const found=vehicles.find(v=>String(v.id).trim()===candidate);
+      if(found) return found.id;
+    }
+    return defaultVehicleId();
+  };
+
   const computeMetricsFromSessions = (sessions)=>{
     const sorted=(sessions||[]).slice().sort((a,b)=>{
       const sa=Number.isFinite(Number(a?.startMin))?Number(a.startMin):Number.POSITIVE_INFINITY;
@@ -3674,17 +3905,28 @@ Si no puedes programar una tarea o detectas un conflicto, documenta el problema 
       latestEnd:null,
       unscheduled:0,
       windowViolations:0,
-      fixedConflicts:0
+      fixedConflicts:0,
+      transportSessions:0,
+      locationIssues:0
     };
     let prevEnd=null;
+    let lastLocation=null;
     sorted.forEach(session=>{
       const start=Number.isFinite(Number(session?.startMin))?Number(session.startMin):null;
       const end=Number.isFinite(Number(session?.endMin))?Number(session.endMin):null;
+      const actionType=normalizeActionTypeValue(session?.actionType);
+      if(actionType===ACTION_TYPE_TRANSPORT) metrics.transportSessions+=1;
       if(start!=null){
         if(metrics.earliestStart==null || start<metrics.earliestStart) metrics.earliestStart=start;
       }
       if(end!=null){
         if(metrics.latestEnd==null || end>metrics.latestEnd) metrics.latestEnd=end;
+      }
+      const originId=session?.originId || null;
+      const destinationId=session?.destinationId ?? session?.locationId ?? null;
+      const effectiveOrigin=originId || (actionType===ACTION_TYPE_TRANSPORT ? (lastLocation||originId) : session?.locationId || lastLocation);
+      if(lastLocation && effectiveOrigin && lastLocation!==effectiveOrigin){
+        metrics.locationIssues+=1;
       }
       if(start!=null && end!=null && end>start){
         const dur=end-start;
@@ -3697,6 +3939,7 @@ Si no puedes programar una tarea o detectas un conflicto, documenta el problema 
       }else{
         metrics.unscheduled+=1;
       }
+      lastLocation = destinationId || lastLocation;
     });
     return metrics;
   };
@@ -3740,15 +3983,37 @@ Si no puedes programar una tarea o detectas un conflicto, documenta el problema 
           const taskNameKey=String(session.taskName).trim().toLowerCase();
           if(taskByName.has(taskNameKey)) task=taskByName.get(taskNameKey);
         }
-        if(!task){
-          staffWarnings.add(`Sesión ${idx+1}: tarea desconocida (${taskIdRaw || session?.taskName || "sin identificador"}).`);
-          return;
-        }
+        const actionTypeHint = normalizeActionTypeValue(pickFirstString(session,["actionType","tipoAccion","tipo","categoria"]));
         const start=scheduleAiTimeToMinutes(session?.start ?? session?.startTime ?? session?.inicio ?? session?.horaInicio);
         let end=scheduleAiTimeToMinutes(session?.end ?? session?.endTime ?? session?.fin ?? session?.horaFin);
         const duration=Number(session?.durationMin ?? session?.duration ?? session?.duracionMin ?? session?.duracion);
         if(start!=null && (end==null || end<=start) && Number.isFinite(duration) && duration>0){
           end=normalizeMinute(start + duration);
+        }
+        if(!task){
+          if(actionTypeHint===ACTION_TYPE_TRANSPORT){
+            if(start==null || end==null || end<=start){
+              staffWarnings.add(`Sesión ${idx+1}: transporte sin horario válido.`);
+              return;
+            }
+            const originId=pickFirstString(session,["originId","origenId","origin","origen"]);
+            const destinationId=pickFirstString(session,["destinationId","destinoId","destination","destino","locationId","localizacionId"]);
+            const vehicleId=resolveVehicleId(session);
+            const actionName=pickFirstString(session,["actionName","taskName","nombre"]) || "Transporte";
+            const comentario=pickFirstString(session,["comment","comentario","notes"]);
+            sessions.push(makeSyntheticTransportSession({
+              start,
+              end,
+              originId:originId||null,
+              destinationId:destinationId||null,
+              vehicleId,
+              comentario,
+              actionName
+            }));
+            return;
+          }
+          staffWarnings.add(`Sesión ${idx+1}: tarea desconocida (${taskIdRaw || session?.taskName || "sin identificador"}).`);
+          return;
         }
         if((start==null || end==null || end<=start)){
           staffWarnings.add(`${labelForTask(task)}: horario incompleto devuelto por la IA.`);
@@ -3759,7 +4024,17 @@ Si no puedes programar una tarea o detectas un conflicto, documenta el problema 
         task.durationMin=Math.max(5, roundToFive(end-start));
         task.assignedStaffIds=[staffId];
         scheduledTaskIds.add(task.id);
-        sessions.push(makeTaskSession(task, start, end));
+        const sessionEntry=makeTaskSession(task, start, end);
+        if(actionTypeHint===ACTION_TYPE_TRANSPORT){
+          sessionEntry.actionType=ACTION_TYPE_TRANSPORT;
+          const originId=pickFirstString(session,["originId","origenId","origin","origen"]);
+          const destinationId=pickFirstString(session,["destinationId","destinoId","destination","destino","locationId","localizacionId"]);
+          if(originId) sessionEntry.originId = originId;
+          if(destinationId) sessionEntry.destinationId = destinationId;
+          const vehicleId=resolveVehicleId(session);
+          if(vehicleId) sessionEntry.vehicleId = vehicleId;
+        }
+        sessions.push(sessionEntry);
       });
       if(!sessions.length && !staffWarnings.size){
         staffWarnings.add("La IA no generó sesiones para este miembro del staff.");
@@ -3869,6 +4144,24 @@ Si no puedes programar una tarea o detectas un conflicto, documenta el problema 
     cantidad: Math.max(0, Number(mat?.cantidad)||0)
   }));
 
+  const makeSyntheticTransportSession = ({ start, end, originId, destinationId, vehicleId, comentario, actionName })=>({
+    id:nextScheduleSessionId(),
+    startMin:start,
+    endMin:end,
+    taskTypeId:TASK_TRANSP,
+    actionType:ACTION_TYPE_TRANSPORT,
+    actionName:actionName || "Transporte",
+    locationId:destinationId || null,
+    vehicleId:vehicleId || defaultVehicleId(),
+    materiales:[],
+    comentario:comentario||"",
+    prevId:null,
+    nextId:null,
+    inheritFromId:null,
+    originId:originId||null,
+    destinationId:destinationId||null
+  });
+
   const makeTaskSession = (task, start, end)=>{
     const session={
       id:nextScheduleSessionId(),
@@ -3885,9 +4178,17 @@ Si no puedes programar una tarea o detectas un conflicto, documenta el problema 
       nextId:null,
       inheritFromId: task.id||null
     };
-    if(session.actionType===ACTION_TYPE_TRANSPORT && !session.taskTypeId){
-      session.taskTypeId = TASK_TRANSP;
-      session.vehicleId = defaultVehicleId();
+    if(session.actionType===ACTION_TYPE_TRANSPORT){
+      const flow=transportFlowForTask(task);
+      if(!session.taskTypeId) session.taskTypeId = TASK_TRANSP;
+      session.vehicleId = task.vehicleId || session.vehicleId || defaultVehicleId();
+      session.originId = flow.origin || null;
+      session.destinationId = flow.destination || session.locationId || null;
+      if(session.originId && session.destinationId){
+        const originName=locationNameById(session.originId) || "Origen";
+        const destName=locationNameById(session.destinationId) || "Destino";
+        session.actionName = session.actionName || `Transporte ${originName} → ${destName}`;
+      }
     }
     return session;
   };
@@ -4088,7 +4389,14 @@ Si no puedes programar una tarea o detectas un conflicto, documenta el problema 
           row.appendChild(el("td",null, session.actionName||"Sin nombre"));
           let loc="Sin localización";
           if(session.actionType===ACTION_TYPE_TRANSPORT){
-            loc = session.locationId ? (locationNameById(session.locationId)||"En ruta") : "En ruta";
+            const originName=session.originId ? (locationNameById(session.originId)||"Origen desconocido") : null;
+            const destId=session.destinationId ?? session.locationId;
+            const destName=destId ? (locationNameById(destId)||"Destino desconocido") : null;
+            if(originName || destName){
+              loc = `${originName||"Origen"} → ${destName||"Destino"}`;
+            }else{
+              loc = "En ruta";
+            }
           }else if(session.locationId){
             loc = locationNameById(session.locationId)||"Sin localización";
           }

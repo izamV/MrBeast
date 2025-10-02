@@ -54,6 +54,13 @@ Las prioridades de la solución, en orden estricto, serán:
 - Exponer parámetros configurables (umbral de inicio temprano, pesos de penalización, límites de tiempo de optimización).
 - Entregar siempre la mejor solución factible, documentando las tareas no asignadas cuando existan.
 
+### 6. Flujo operativo del generador asistido por IA
+- **Normalización enriquecida de datos.** El recolector que alimenta a la IA consolida ahora la jerarquía completa de tareas (principales, pre, post y concurrentes), aplica límites derivados cuando faltan ventanas manuales y adjunta metadatos adicionales como profundidad en el árbol, nombre de la raíz y bloqueos. De este modo la IA conoce la posición exacta de cada actividad en la cadena y puede respetar su semántica temporal incluso cuando el usuario no ha fijado restricciones explícitas.
+- **Contexto logístico completo.** Además de las ubicaciones con sus coordenadas, se envían los vehículos disponibles, la velocidad estimada de cada uno y una matriz de tiempos de desplazamiento entre localizaciones. El payload también incluye la localización inicial y las preferencias de arranque tanto del proyecto como del staff para facilitar decisiones tardías coherentes con la operativa.
+- **Reglas explícitas de transporte.** El prompt instruye al modelo para que inserte tramos de transporte (`actionType = "TRANSPORTE"`) siempre que detecte un cambio de localización en la secuencia de tareas de un mismo miembro. Cada transporte debe declarar origen, destino, vehículo empleado y duración compatible con la matriz logística. Los transportes se consideran nuevas sesiones auxiliares y no requieren un `taskId` de catálogo.
+- **Validaciones y avisos.** Si algún bloque no cabe en su ventana o falta tiempo de desplazamiento, la IA debe reportarlo en la lista de advertencias. El sistema conserva estos avisos y los muestra en el catálogo de horarios junto a métricas de huecos, transportes generados y conflictos de localización.
+- **Mantenimiento de funcionalidades previas.** Las tareas bloqueadas siguen siendo inamovibles, las duraciones se respetan, y la interfaz continúa presentando los horarios del staff junto con los resúmenes globales. El refuerzo de datos y prompt actúa únicamente sobre la lógica de generación sin afectar a la edición manual existente.
+
 ## Próximos Pasos
 1. Definir modelos de datos y endpoints para obtener tareas y publicar horarios.
 2. Implementar la normalización de tareas y la inicialización de horarios.
