@@ -4364,6 +4364,71 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
     return session;
   };
 
+  const minuteValueOrNull = (value)=>{
+    if(value==null || value==="") return null;
+    const num=Number(value);
+    return Number.isFinite(num) ? normalizeMinute(num) : null;
+  };
+
+  const describeSession = (session)=>{
+    if(!session) return "Sesión";
+    return session.actionName || session.taskName || session.nombre || session.inheritFromId || session.id || "Sesión";
+  };
+
+  const getSessionDurationValue = (session)=>{
+    if(!session) return null;
+    const start=minuteValueOrNull(session.startMin);
+    const end=minuteValueOrNull(session.endMin);
+    if(start!=null && end!=null && end>start) return end-start;
+    const duration=Number.isFinite(Number(session.durationMin)) ? Math.max(5, Math.round(Number(session.durationMin))) : null;
+    return (duration!=null && duration>0) ? duration : null;
+  };
+
+  const ensureSessionTiming = (session)=>{
+    const duration=getSessionDurationValue(session);
+    if(duration==null){
+      return { duration:null, start:minuteValueOrNull(session?.startMin), end:minuteValueOrNull(session?.endMin) };
+    }
+    let start=minuteValueOrNull(session.startMin);
+    let end=minuteValueOrNull(session.endMin);
+    if(start!=null && end==null){
+      end=normalizeMinute(start + duration);
+    }else if(start==null && end!=null){
+      start=normalizeMinute(Math.max(0, end - duration));
+    }else if(start!=null && end!=null && end<=start){
+      end=normalizeMinute(start + duration);
+    }
+    if(start!=null) session.startMin=start;
+    if(end!=null) session.endMin=end;
+    session.durationMin = duration;
+    return { duration, start, end };
+  };
+
+  const shiftSessionStartTo = (session, newStart)=>{
+    const duration=getSessionDurationValue(session);
+    if(duration==null) return null;
+    const normalizedStart=normalizeMinute(newStart);
+    const newEnd=normalizeMinute(normalizedStart + duration);
+    session.startMin=normalizedStart;
+    session.endMin=newEnd;
+    session.durationMin=duration;
+    return { start:normalizedStart, end:newEnd };
+  };
+
+  const adjustSessionStartIfNeeded = (session, minStart, staffWarnings, buildMessage)=>{
+    if(minStart==null) return;
+    const info=ensureSessionTiming(session);
+    if(info.duration==null) return;
+    const currentStart=info.start;
+    if(currentStart==null || currentStart<minStart){
+      const shifted=shiftSessionStartTo(session, minStart);
+      if(shifted && staffWarnings){
+        const message=typeof buildMessage === "function" ? buildMessage(minStart, shifted) : buildMessage;
+        if(message) staffWarnings.add(String(message));
+      }
+    }
+  };
+
   const getSessionDestination = (session)=>{
     if(!session) return null;
     const type=normalizeActionTypeValue(session.actionType);
@@ -4386,29 +4451,41 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
     });
     const augmented=[];
     const initialLocation=state?.localizacionInicial?.[staffId] || null;
+    let previousDestination=initialLocation;
+    let availableEnd=null;
     sorted.forEach((session)=>{
-      const currentOrigin=getSessionOrigin(session, augmented.length?getSessionDestination(augmented[augmented.length-1]):initialLocation);
-      if(!augmented.length && initialLocation && currentOrigin && initialLocation!==currentOrigin){
-        const transport=buildTransportSessionBetween(initialLocation, currentOrigin, null, session.startMin ?? null, staffWarnings);
-        if(transport) augmented.push(transport);
-      }else if(augmented.length){
-        const last=augmented[augmented.length-1];
-        const lastDestination=getSessionDestination(last) || null;
-        const lastType=normalizeActionTypeValue(last?.actionType);
-        const alreadyLinked=lastType===ACTION_TYPE_TRANSPORT && lastDestination && currentOrigin && lastDestination===currentOrigin;
-        if(!alreadyLinked && lastDestination && currentOrigin && lastDestination!==currentOrigin){
-          const earliestStart=Number.isFinite(last?.endMin)?Number(last.endMin):Number.isFinite(last?.startMin)?Number(last.startMin):null;
-          const transport=buildTransportSessionBetween(lastDestination, currentOrigin, earliestStart, session.startMin ?? null, staffWarnings);
-          if(transport){
-            if(session.startMin!=null && transport.endMin>session.startMin && staffWarnings){
-              const destinationName=locationNameById(currentOrigin)||currentOrigin||"Destino";
-              staffWarnings.add(`Transporte automático hacia ${destinationName} solapa con la siguiente tarea.`);
-            }
-            augmented.push(transport);
+      let info=ensureSessionTiming(session);
+      const plannedStart=info.start;
+      const fallbackOrigin=previousDestination || initialLocation;
+      const currentOrigin=getSessionOrigin(session, fallbackOrigin);
+      if(previousDestination && currentOrigin && previousDestination!==currentOrigin){
+        const transport=buildTransportSessionBetween(previousDestination, currentOrigin, availableEnd, plannedStart ?? null, staffWarnings);
+        if(transport){
+          const transportEnd=minuteValueOrNull(transport.endMin);
+          augmented.push(transport);
+          if(transportEnd!=null){
+            availableEnd=transportEnd;
+            adjustSessionStartIfNeeded(
+              session,
+              transportEnd,
+              staffWarnings,
+              (min)=>`${describeSession(session)}: ajustado a ${toHHMM(min)} para respetar el transporte hasta ${locationNameById(currentOrigin)||currentOrigin}.`
+            );
+            info=ensureSessionTiming(session);
           }
+          previousDestination=getSessionDestination(transport) || currentOrigin || previousDestination;
         }
       }
+      adjustSessionStartIfNeeded(
+        session,
+        availableEnd,
+        staffWarnings,
+        (min)=>`${describeSession(session)}: reajustado a ${toHHMM(min)} para evitar solapes con actividades previas.`
+      );
+      info=ensureSessionTiming(session);
+      if(info.end!=null) availableEnd=info.end;
       augmented.push(session);
+      previousDestination=getSessionDestination(session) || previousDestination;
     });
     return augmented;
   };
