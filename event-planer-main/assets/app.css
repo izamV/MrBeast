@@ -369,6 +369,41 @@ table.matlist td.act{width:120px}
 .timeline-card.readonly{cursor:default}
 .timeline-card.readonly:hover{border-color:#1f2937}
 
+/* === Horario completo (catálogo horarios) === */
+.full-schedule{display:flex;flex-direction:column;gap:1.25rem}
+.full-schedule-legend{display:flex;flex-wrap:wrap;gap:.6rem 1rem;align-items:center;font-size:.8rem}
+.full-schedule-legend-item{display:inline-flex;align-items:center;gap:.4rem;padding:.35rem .6rem;background:#0f172a;border:1px solid #1f2937;border-radius:.6rem;color:#e5e7eb}
+.full-schedule-legend-swatch{width:14px;height:14px;border-radius:3px;display:block;background:#2563eb;box-shadow:0 0 0 1px rgba(15,23,42,.4)}
+.full-schedule-legend-item.is-transport .full-schedule-legend-swatch{background-color:#0284c7;background-image:repeating-linear-gradient(45deg,rgba(255,255,255,.55)0 6px,rgba(255,255,255,.12)6px 12px)}
+.full-schedule-timeline{position:relative;overflow-x:auto;padding:1rem;background:#0f172a;border:1px solid #1f2937;border-radius:.9rem}
+.full-schedule-inner{position:relative;min-width:680px}
+.full-schedule-axis{position:relative;height:24px;margin-left:180px;margin-bottom:.75rem}
+.full-schedule-axis-line{position:absolute;left:0;right:0;bottom:0;height:1px;background:rgba(148,163,184,.2)}
+.full-schedule-axis-tick{position:absolute;top:0;bottom:0;width:1px;background:rgba(148,163,184,.18)}
+.full-schedule-axis-tick .axis-label{position:absolute;top:-18px;left:50%;transform:translateX(-50%);font-size:.7rem;color:#94a3b8;font-variant-numeric:tabular-nums}
+.full-schedule-rows{position:relative;padding-left:180px;display:flex;flex-direction:column;gap:1.2rem}
+.full-schedule-row{position:relative}
+.full-schedule-row-name{position:absolute;left:-180px;top:0;bottom:0;display:flex;align-items:flex-start;color:#cbd5f5;font-weight:600;padding-top:.3rem}
+.full-schedule-track{position:relative;border:1px solid #1f2937;border-radius:.75rem;background:#0b1220;min-height:56px}
+.full-schedule-block{position:absolute;top:6px;min-height:30px;padding:.4rem .55rem;border-radius:.55rem;background:var(--block-color,#2563eb);color:#f8fafc;display:flex;flex-direction:column;gap:.2rem;box-shadow:0 10px 25px rgba(15,23,42,.28);border:1px solid rgba(255,255,255,.12);backdrop-filter:blur(1px)}
+.full-schedule-block .block-time{font-size:.75rem;font-variant-numeric:tabular-nums;font-weight:600}
+.full-schedule-block .block-label{font-size:.85rem;font-weight:600}
+.full-schedule-block .block-meta{font-size:.7rem;color:#e2e8f0;opacity:.9}
+.full-schedule-block.is-client.relation-milestone{--block-color:#2563eb}
+.full-schedule-block.is-client.relation-pre{--block-color:#9333ea}
+.full-schedule-block.is-client.relation-parallel{--block-color:#0d9488}
+.full-schedule-block.is-client.relation-post{--block-color:#ea580c}
+.full-schedule-block.is-staff{background:var(--block-color,#2563eb);color:#f8fafc}
+.full-schedule-block.is-transport{background-image:repeating-linear-gradient(45deg,rgba(255,255,255,.5)0 8px,rgba(255,255,255,.18)8px 16px);border-color:rgba(255,255,255,.38)}
+.full-schedule-empty{padding:1rem;font-size:.85rem;color:#94a3b8}
+.full-schedule-unscheduled{display:flex;flex-direction:column;gap:.5rem;background:#0f172a;border:1px solid #1f2937;border-radius:.75rem;padding:.9rem}
+.full-schedule-unscheduled h4{margin:0;font-size:.9rem;letter-spacing:.05em;text-transform:uppercase;color:#94a3b8}
+.full-schedule-unscheduled ul{margin:0;padding-left:1.25rem;display:flex;flex-direction:column;gap:.25rem;font-size:.85rem;color:#e5e7eb}
+.full-schedule-links{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;overflow:visible}
+.full-schedule-link{fill:none;stroke-width:2;stroke-linecap:round}
+.full-schedule-link-dependency{stroke:rgba(148,163,184,.45)}
+.full-schedule-link-assignment{stroke:rgba(59,130,246,.6)}
+
 @media (max-width:1100px){
   .client-layout{grid-template-columns:1fr}
   .nexo-grid{grid-template-areas:"top" "center" "right" "left" "bottom";grid-template-columns:1fr}

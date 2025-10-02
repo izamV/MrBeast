@@ -3443,6 +3443,98 @@
 
   const scheduleTargets = new Set();
   let scheduleSequence = 0;
+  const SCHEDULE_FULL_VIEW_ID = "__FULL_SCHEDULE__";
+
+  const staffColorCache = new Map();
+  const staffColorFor = (staff, index)=>{
+    if(!staff) return "hsl(200, 70%, 45%)";
+    if(staffColorCache.has(staff.id)) return staffColorCache.get(staff.id);
+    const hue = (index * 57 + 23) % 360;
+    const color = `hsl(${hue}, 70%, 45%)`;
+    staffColorCache.set(staff.id, color);
+    return color;
+  };
+
+  let fullScheduleResizeHandler = null;
+  let fullScheduleResizeTarget = null;
+  let fullScheduleResizeData = null;
+
+  const detachFullScheduleRedraw = ()=>{
+    if(fullScheduleResizeHandler){
+      window.removeEventListener("resize", fullScheduleResizeHandler);
+      fullScheduleResizeHandler = null;
+    }
+    fullScheduleResizeTarget = null;
+    fullScheduleResizeData = null;
+  };
+
+  const drawFullScheduleLinks = ()=>{
+    if(!fullScheduleResizeTarget || !fullScheduleResizeTarget.isConnected || !fullScheduleResizeData) return;
+    const { dependencyPairs, assignmentPairs, clientElements } = fullScheduleResizeData;
+    const container = fullScheduleResizeTarget;
+    const previous = container.querySelector("svg.full-schedule-links");
+    if(previous) previous.remove();
+    const rect = container.getBoundingClientRect();
+    const width = Math.max(1, rect.width);
+    const height = Math.max(1, rect.height);
+    if(!width || !height) return;
+    const ns = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(ns, "svg");
+    svg.classList.add("full-schedule-links");
+    svg.setAttribute("width", String(width));
+    svg.setAttribute("height", String(height));
+    svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+    const toLocal = (element)=>{
+      if(!element) return null;
+      const r = element.getBoundingClientRect();
+      return {
+        left: r.left - rect.left,
+        right: r.right - rect.left,
+        top: r.top - rect.top,
+        bottom: r.bottom - rect.top
+      };
+    };
+    const appendPath = (start, end, className, color)=>{
+      if(!start || !end) return;
+      const startX = (start.left + start.right) / 2;
+      const endX = (end.left + end.right) / 2;
+      const startY = start.bottom;
+      const endY = end.top;
+      const midY = (startY + endY) / 2;
+      const path = document.createElementNS(ns, "path");
+      path.setAttribute("d", `M ${startX} ${startY} C ${startX} ${midY} ${endX} ${midY} ${endX} ${endY}`);
+      path.setAttribute("class", className);
+      if(color) path.style.stroke = color;
+      svg.appendChild(path);
+    };
+    dependencyPairs.forEach(({ parentId, childId })=>{
+      const parentEl = clientElements.get(parentId);
+      const childEl = clientElements.get(childId);
+      if(!parentEl || !childEl) return;
+      appendPath(toLocal(parentEl), toLocal(childEl), "full-schedule-link full-schedule-link-dependency");
+    });
+    assignmentPairs.forEach(({ taskId, element, color })=>{
+      const clientEl = clientElements.get(taskId);
+      if(!clientEl || !element) return;
+      appendPath(toLocal(clientEl), toLocal(element), "full-schedule-link full-schedule-link-assignment", color);
+    });
+    if(svg.childNodes.length){
+      container.appendChild(svg);
+    }
+  };
+
+  const installFullScheduleRedraw = (container, data)=>{
+    detachFullScheduleRedraw();
+    if(!container || !data) return;
+    fullScheduleResizeTarget = container;
+    fullScheduleResizeData = data;
+    fullScheduleResizeHandler = ()=>{
+      if(!fullScheduleResizeTarget || !fullScheduleResizeTarget.isConnected) return;
+      window.requestAnimationFrame(drawFullScheduleLinks);
+    };
+    window.addEventListener("resize", fullScheduleResizeHandler);
+    window.requestAnimationFrame(drawFullScheduleLinks);
+  };
 
   function notifyScheduleSubscribers(){
     if(typeof window.updateScheduleCatalogButton === "function") window.updateScheduleCatalogButton();
@@ -5046,6 +5138,7 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
   const renderScheduleCatalogInto = (container)=>{
     ensureScheduleMeta();
     if(!container) return;
+    detachFullScheduleRedraw();
     container.innerHTML="";
     const controls=el("div","schedule-controls");
     const availabilityMsg="Bloquea todas las tareas del cliente para generar los horarios.";
@@ -5073,7 +5166,6 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
 
     if(!staffList.length){
       container.appendChild(el("div","mini muted","Añade miembros del staff desde la barra lateral para poder generar los horarios."));
-      return;
     }
 
     const warningsStore=state.scheduleMeta.warningsByStaff||{};
@@ -5130,9 +5222,14 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
       container.appendChild(globalBox);
     }
 
+    const staffIds=new Set((staffList||[]).map(st=>st.id));
     let activeId=state.scheduleMeta.activeStaffId;
-    if(!activeId || !staffList.some(st=>st.id===activeId)){
-      const fallbackId=staffList[0]?.id||null;
+    if(!activeId){
+      activeId = SCHEDULE_FULL_VIEW_ID;
+      state.scheduleMeta.activeStaffId = activeId;
+      touch();
+    }else if(activeId!==SCHEDULE_FULL_VIEW_ID && !staffIds.has(activeId)){
+      const fallbackId = staffList[0]?.id || SCHEDULE_FULL_VIEW_ID;
       if(state.scheduleMeta.activeStaffId!==fallbackId){
         state.scheduleMeta.activeStaffId=fallbackId;
         touch();
@@ -5141,6 +5238,15 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
     }
 
     const tabs=el("div","schedule-tabs");
+    const fullTab=el("button","tab"+(activeId===SCHEDULE_FULL_VIEW_ID?" active":""),"Horario completo");
+    fullTab.type="button";
+    fullTab.onclick=()=>{
+      if(state.scheduleMeta.activeStaffId===SCHEDULE_FULL_VIEW_ID) return;
+      state.scheduleMeta.activeStaffId=SCHEDULE_FULL_VIEW_ID;
+      touch();
+      renderScheduleCatalogInto(container);
+    };
+    tabs.appendChild(fullTab);
     staffList.forEach(st=>{
       const tab=el("button","tab"+(st.id===activeId?" active":""), st.nombre||st.id);
       tab.type="button";
@@ -5155,9 +5261,10 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
     container.appendChild(tabs);
 
     const body=el("div","schedule-body");
-    if(!activeId){
-      body.appendChild(el("div","mini muted","Selecciona un miembro del staff para ver su planificación."));
-    }else{
+    if(activeId===SCHEDULE_FULL_VIEW_ID){
+      buildFullScheduleOverview(body, staffList);
+    }else if(activeId){
+      detachFullScheduleRedraw();
       const sessions=(state.sessions?.[activeId]||[]).slice().sort((a,b)=> (a.startMin||0)-(b.startMin||0));
       if(!sessions.length){
         const msg = state.scheduleMeta.generatedAt
@@ -5239,6 +5346,9 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
         metricsBox.appendChild(metricsTable);
         body.appendChild(metricsBox);
       }
+    }else{
+      detachFullScheduleRedraw();
+      body.appendChild(el("div","mini muted","Selecciona un miembro del staff para ver su planificación."));
     }
     container.appendChild(body);
   };
@@ -5288,6 +5398,277 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
       persons.push({ id:st.id, nombre:st.nombre||st.id, tasks:arr });
     });
     return persons;
+  };
+
+  const buildFullScheduleOverview = (container, staffList)=>{
+    if(!container) return;
+    container.innerHTML="";
+
+    const toMinutes = (value)=>{
+      const num = Number(value);
+      return Number.isFinite(num) ? num : null;
+    };
+
+    const tasks = getTaskList();
+    const scheduledNodes = [];
+    const unscheduledTasks = [];
+    tasks.forEach(task=>{
+      const start = toMinutes(task.startMin);
+      const end = toMinutes(task.endMin);
+      if(Number.isFinite(start) && Number.isFinite(end) && end>start){
+        scheduledNodes.push({
+          task,
+          id: task.id,
+          startMin: start,
+          endMin: end,
+          relation: task.structureRelation || "milestone"
+        });
+      }else{
+        unscheduledTasks.push(task);
+      }
+    });
+
+    const staffMap = new Map((staffList||[]).map(st=>[st.id, st]));
+    const staffRows = (staffList||[]).map((staff, index)=>{
+      const color = staffColorFor(staff, index);
+      const rawSessions = (state.sessions?.[staff.id]||[]);
+      const sessions = rawSessions.map(session=>{
+        const start = toMinutes(session.startMin);
+        const end = toMinutes(session.endMin);
+        if(!Number.isFinite(start) || !Number.isFinite(end) || end<=start) return null;
+        return {
+          startMin: start,
+          endMin: end,
+          actionName: session.actionName || "Sin nombre",
+          actionType: session.actionType || ACTION_TYPE_NORMAL,
+          locationId: session.locationId || null,
+          originId: session.originId || null,
+          destinationId: session.destinationId ?? session.locationId ?? null,
+          taskId: session.taskId || null,
+          color,
+          staff,
+          source: session
+        };
+      }).filter(Boolean);
+      return { staff, color, sessions };
+    });
+
+    let rangeStart = null;
+    let rangeEnd = null;
+    const considerRange = (start, end)=>{
+      if(!Number.isFinite(start) || !Number.isFinite(end)) return;
+      rangeStart = rangeStart==null ? start : Math.min(rangeStart, start);
+      rangeEnd = rangeEnd==null ? end : Math.max(rangeEnd, end);
+    };
+    scheduledNodes.forEach(node=> considerRange(node.startMin, node.endMin));
+    staffRows.forEach(row=> row.sessions.forEach(session=> considerRange(session.startMin, session.endMin)));
+    if(rangeStart==null || rangeEnd==null){
+      rangeStart = SUGGESTED_DAY_LOWER_MIN ?? 8*60;
+      rangeEnd = rangeStart + 8*60;
+    }
+    if(rangeEnd <= rangeStart){
+      rangeEnd = rangeStart + 60;
+    }
+    const rangeLength = Math.max(60, rangeEnd - rangeStart);
+    const percentFor = (minute)=> ((minute - rangeStart) / rangeLength) * 100;
+
+    const assignLanes = (items)=>{
+      if(!items.length) return 1;
+      const sorted = items.slice().sort((a,b)=>{
+        if(a.startMin!==b.startMin) return a.startMin - b.startMin;
+        return a.endMin - b.endMin;
+      });
+      const laneEnds = [];
+      sorted.forEach(item=>{
+        let laneIndex = 0;
+        while(laneEnds[laneIndex]!=null && item.startMin < laneEnds[laneIndex]) laneIndex++;
+        item.lane = laneIndex;
+        laneEnds[laneIndex] = item.endMin;
+      });
+      return Math.max(1, laneEnds.length || 1);
+    };
+
+    const hasScheduleData = scheduledNodes.length>0 || staffRows.some(row=>row.sessions.length);
+    if(!hasScheduleData){
+      container.appendChild(el("div","mini muted","Todavía no hay bloques con horario para mostrar."));
+      if(unscheduledTasks.length){
+        const unsched=el("div","full-schedule-unscheduled");
+        unsched.appendChild(el("h4",null,"Tareas sin horario calculado"));
+        const list=el("ul");
+        unscheduledTasks.forEach(task=>{
+          const relationLabel=RELATION_LABEL[task.structureRelation]||"Tarea";
+          list.appendChild(el("li",null,`${labelForTask(task)} (${relationLabel})`));
+        });
+        unsched.appendChild(list);
+        container.appendChild(unsched);
+      }
+      detachFullScheduleRedraw();
+      return;
+    }
+
+    const wrap=el("div","full-schedule");
+    const legend=el("div","full-schedule-legend");
+    const relationOrder=["milestone","pre","parallel","post"];
+    relationOrder.forEach(key=>{
+      const color=RELATION_COLOR[key] || "#64748b";
+      const item=el("div","full-schedule-legend-item");
+      const swatch=el("span","full-schedule-legend-swatch");
+      swatch.style.background=color;
+      item.appendChild(swatch);
+      item.appendChild(el("span",null,RELATION_LABEL[key] || key));
+      legend.appendChild(item);
+    });
+    if(staffList?.length){
+      staffList.forEach((staff, index)=>{
+        const color=staffColorFor(staff, index);
+        const item=el("div","full-schedule-legend-item");
+        const swatch=el("span","full-schedule-legend-swatch");
+        swatch.style.background=color;
+        item.appendChild(swatch);
+        item.appendChild(el("span",null,staff.nombre||staff.id||"Staff"));
+        legend.appendChild(item);
+      });
+    }
+    const transportLegend=el("div","full-schedule-legend-item");
+    transportLegend.classList.add("is-transport");
+    const transportSwatch=el("span","full-schedule-legend-swatch");
+    transportSwatch.classList.add("is-transport");
+    transportLegend.appendChild(transportSwatch);
+    transportLegend.appendChild(el("span",null,"Transporte"));
+    legend.appendChild(transportLegend);
+    wrap.appendChild(legend);
+
+    const timeline=el("div","full-schedule-timeline");
+    const inner=el("div","full-schedule-inner");
+    const axis=el("div","full-schedule-axis");
+    const axisLine=el("div","full-schedule-axis-line");
+    axis.appendChild(axisLine);
+    const startHour=Math.floor(rangeStart/60);
+    const endHour=Math.ceil(rangeEnd/60);
+    for(let hour=startHour; hour<=endHour; hour++){
+      const minute=hour*60;
+      const offset=percentFor(minute);
+      if(offset < -5 || offset > 105) continue;
+      const tick=el("div","full-schedule-axis-tick");
+      tick.style.left=`${offset}%`;
+      tick.appendChild(el("span","axis-label", toHHMM(minute)));
+      axis.appendChild(tick);
+    }
+    inner.appendChild(axis);
+
+    const rows=el("div","full-schedule-rows");
+    const clientRow=el("div","full-schedule-row");
+    const clientLabel=el("div","full-schedule-row-name","Cliente");
+    clientRow.appendChild(clientLabel);
+    const clientTrack=el("div","full-schedule-track");
+    clientRow.appendChild(clientTrack);
+    rows.appendChild(clientRow);
+
+    const clientElements=new Map();
+    if(scheduledNodes.length){
+      const laneCount=assignLanes(scheduledNodes);
+      clientTrack.style.height=`${laneCount*34 + 18}px`;
+      scheduledNodes.forEach(node=>{
+        const block=el("div","full-schedule-block is-client");
+        block.classList.add(`relation-${node.relation}`);
+        block.dataset.taskId=node.id;
+        const left=Math.max(0, Math.min(100, percentFor(node.startMin)));
+        const width=Math.max(0.5, percentFor(node.endMin) - percentFor(node.startMin));
+        block.style.setProperty("--block-color", RELATION_COLOR[node.relation] || "#64748b");
+        block.style.left=`${left}%`;
+        block.style.width=`${width}%`;
+        block.style.top=`${node.lane*34 + 6}px`;
+        block.appendChild(el("div","block-time", `${toHHMM(node.startMin)} – ${toHHMM(node.endMin)}`));
+        block.appendChild(el("div","block-label", labelForTask(node.task)));
+        const assignedNames=(node.task.assignedStaffIds||[]).map(id=> (staffMap.get(id)?.nombre)||null).filter(Boolean);
+        if(assignedNames.length){
+          block.appendChild(el("div","block-meta", `Asignado a: ${assignedNames.join(", ")}`));
+        }
+        if(node.task.locationId){
+          const locName=locationNameById(node.task.locationId);
+          if(locName) block.appendChild(el("div","block-meta", locName));
+        }
+        block.title=`${labelForTask(node.task)}\n${toHHMM(node.startMin)} – ${toHHMM(node.endMin)}`;
+        clientTrack.appendChild(block);
+        clientElements.set(node.id, block);
+      });
+    }else{
+      clientTrack.appendChild(el("div","full-schedule-empty","Sin tareas con horario fijado."));
+      clientTrack.style.minHeight="48px";
+    }
+
+    const assignmentPairs=[];
+    staffRows.forEach((row, index)=>{
+      const rowEl=el("div","full-schedule-row");
+      const name=el("div","full-schedule-row-name", row.staff.nombre||row.staff.id||`Staff ${index+1}`);
+      rowEl.appendChild(name);
+      const track=el("div","full-schedule-track");
+      rowEl.appendChild(track);
+      if(row.sessions.length){
+        const laneCount=assignLanes(row.sessions);
+        track.style.height=`${laneCount*34 + 18}px`;
+        row.sessions.forEach(session=>{
+          const block=el("div","full-schedule-block is-staff");
+          block.dataset.staffId=row.staff.id;
+          if(session.taskId) block.dataset.taskId=session.taskId;
+          block.style.setProperty("--block-color", session.color);
+          const left=Math.max(0, Math.min(100, percentFor(session.startMin)));
+          const width=Math.max(0.5, percentFor(session.endMin) - percentFor(session.startMin));
+          block.style.left=`${left}%`;
+          block.style.width=`${width}%`;
+          block.style.top=`${session.lane*34 + 6}px`;
+          block.appendChild(el("div","block-time", `${toHHMM(session.startMin)} – ${toHHMM(session.endMin)}`));
+          block.appendChild(el("div","block-label", session.actionName));
+          if(session.actionType===ACTION_TYPE_TRANSPORT){
+            block.classList.add("is-transport");
+            const originName=session.originId ? (locationNameById(session.originId)||"Origen") : null;
+            const destId=session.destinationId;
+            const destName=destId ? (locationNameById(destId)||"Destino") : null;
+            const segment=[originName||"Origen", destName||"Destino"].join(" → ");
+            block.appendChild(el("div","block-meta", segment));
+          }else if(session.locationId){
+            const locName=locationNameById(session.locationId);
+            if(locName) block.appendChild(el("div","block-meta", locName));
+          }
+          block.title=`${session.actionName}\n${toHHMM(session.startMin)} – ${toHHMM(session.endMin)}`;
+          track.appendChild(block);
+          if(session.taskId && clientElements.has(session.taskId)){
+            assignmentPairs.push({ taskId: session.taskId, element: block, color: session.color });
+          }
+        });
+      }else{
+        track.appendChild(el("div","full-schedule-empty","Sin sesiones planificadas"));
+        track.style.minHeight="48px";
+      }
+      rows.appendChild(rowEl);
+    });
+
+    inner.appendChild(rows);
+    timeline.appendChild(inner);
+    wrap.appendChild(timeline);
+
+    if(unscheduledTasks.length){
+      const unsched=el("div","full-schedule-unscheduled");
+      unsched.appendChild(el("h4",null,"Tareas sin horario calculado"));
+      const list=el("ul");
+      unscheduledTasks.forEach(task=>{
+        const relationLabel=RELATION_LABEL[task.structureRelation]||"Tarea";
+        list.appendChild(el("li",null,`${labelForTask(task)} (${relationLabel})`));
+      });
+      unsched.appendChild(list);
+      wrap.appendChild(unsched);
+    }
+
+    container.appendChild(wrap);
+
+    const dependencyPairs=scheduledNodes
+      .filter(node=> node.task.structureParentId && clientElements.has(node.task.structureParentId) && clientElements.has(node.id))
+      .map(node=>({ parentId: node.task.structureParentId, childId: node.id }));
+    if(dependencyPairs.length || assignmentPairs.length){
+      installFullScheduleRedraw(rows, { clientElements, dependencyPairs, assignmentPairs });
+    }else{
+      detachFullScheduleRedraw();
+    }
   };
 
   const colorForTask = (task)=> RELATION_COLOR[task.structureRelation] || "#60a5fa";
