@@ -303,7 +303,7 @@
   const getInitialMinuteFor = (pid)=> parseStoredMinute(state.horaInicial?.[pid]);
   const defaultTimelineStart = ()=>{
     const start=getInitialMinuteFor("CLIENTE");
-    return start!=null ? roundToFive(start) : 9*60;
+    return start!=null ? roundToFive(start) : 0;
   };
   const clampToDay = (mins)=> Math.max(0, Math.min(DAY_MAX_MIN, Number(mins)||0));
   const formatTimeForInput = (mins)=>{
@@ -630,7 +630,7 @@
       materiales: [],
       comentario: "",
       assignedStaffIds: [],
-      startMin: parentId?null:(getInitialMinuteFor("CLIENTE") ?? 9*60),
+      startMin: parentId?null:(getInitialMinuteFor("CLIENTE") ?? 0),
       endMin: null,
       actionType: ACTION_TYPE_NORMAL
     };
@@ -807,8 +807,10 @@
     timeInput.onchange=()=>{
       const v=parseTimeInput(timeInput.value);
       if(v==null){
+        state.horaInicial = state.horaInicial || {};
         delete state.horaInicial.CLIENTE;
       }else{
+        state.horaInicial = state.horaInicial || {};
         state.horaInicial.CLIENTE=v;
       }
       touch();
@@ -3560,7 +3562,7 @@
 
   const projectStartCandidate = getInitialMinuteFor("CLIENTE");
   const ABSOLUTE_DAY_MIN = 0;
-  const SUGGESTED_DAY_LOWER_MIN = projectStartCandidate!=null ? normalizeMinute(projectStartCandidate) : 9*60;
+  const SUGGESTED_DAY_LOWER_MIN = projectStartCandidate!=null ? normalizeMinute(projectStartCandidate) : 0;
   const DEFAULT_DAY_LOWER_MIN = ABSOLUTE_DAY_MIN;
   const DEFAULT_DAY_UPPER_MIN = DAY_MAX_MIN;
 

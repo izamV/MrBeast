@@ -239,11 +239,18 @@
     if(!sessions.length){
       const lbl=el("span","mini","Hora inicio");
       const ti=el("input","input"); ti.type="time";
-      ti.value = toHHMM(state.horaInicial?.[pid] ?? 9*60);
+      ti.value = state.horaInicial?.[pid]!=null ? toHHMM(state.horaInicial[pid]) : "";
       ti.onchange=()=>{
-        state.horaInicial[pid]=toMin(ti.value||"09:00");
+        state.horaInicial = state.horaInicial || {};
+        const raw = (ti.value || "").trim();
+        if(!raw){
+          delete state.horaInicial[pid];
+        }else{
+          state.horaInicial[pid]=toMin(raw);
+        }
         if(sessions.length){
-          rebaseTo(pid,state.horaInicial[pid]);
+          const base = state.horaInicial?.[pid] ?? 0;
+          rebaseTo(pid, base);
         }else{
           touch();
         }

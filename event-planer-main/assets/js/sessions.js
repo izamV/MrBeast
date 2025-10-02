@@ -11,7 +11,7 @@
   function durationOf(s){ return Math.max(5, (parseInt(s.endMin||0,10)||0) - (parseInt(s.startMin||0,10)||0)); }
   function reflow(pid){
     const list=getPersonSessions(pid);
-    let cur = (state.horaInicial?.[pid] ?? 9*60);
+    let cur = (state.horaInicial?.[pid] ?? 0);
     for(let i=0;i<list.length;i++){
       const d = durationOf(list[i]);
       list[i].startMin = cur; list[i].endMin = cur + d; cur = list[i].endMin;
@@ -20,7 +20,7 @@
   window.addAfterIndex = (pid, idx, durMin)=>{
     const list=getPersonSessions(pid); const wasEmpty=!list.length;
     const d=Math.max(5,Math.round((parseInt(durMin||15,10)||15)/5)*5);
-    const start = (idx!=null && idx>=0 && list[idx]) ? list[idx].endMin : (list.length? list[list.length-1].endMin : (state.horaInicial?.[pid]??9*60));
+    const start = (idx!=null && idx>=0 && list[idx]) ? list[idx].endMin : (list.length? list[list.length-1].endMin : (state.horaInicial?.[pid] ?? 0));
     const initialLoc = wasEmpty ? (state.localizacionInicial?.[pid] ?? null) : null;
     const s={ id:"S_"+(++__S_SEQ), startMin:start, endMin:start+d, taskTypeId:null, actionType:ACTION_TYPE_NORMAL, actionName:"", locationId:initialLoc, vehicleId:null, materiales:[], comentario:"", prevId:null, nextId:null, inheritFromId:null };
     list.splice((idx!=null && idx>=0)? idx+1 : list.length, 0, s);
