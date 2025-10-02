@@ -49,6 +49,18 @@
     return Number.isFinite(n) ? n : null;
   };
 
+  const toBooleanFlag = (value)=>{
+    if(value === true || value === false) return value;
+    if(value==null) return false;
+    if(typeof value === "number") return value !== 0;
+    if(typeof value === "string"){
+      const normalized=value.trim().toLowerCase();
+      if(!normalized) return false;
+      return ["1","true","sí","si","yes","y"].includes(normalized);
+    }
+    return false;
+  };
+
   const ensureMaterial = (m)=>({
     materialTypeId: m?.materialTypeId || null,
     cantidad: Math.max(1, Math.round(Number.isFinite(Number(m?.cantidad)) ? Number(m.cantidad) : 1))
@@ -79,6 +91,9 @@
     if(typeof task.comentario !== "string") task.comentario = task.comentario ? String(task.comentario) : "";
     task.startMin = toNumberOrNull(task.startMin);
     task.endMin = toNumberOrNull(task.endMin);
+    task.startFixed = toBooleanFlag(task.startFixed || task.fixedStart);
+    task.endFixed = toBooleanFlag(task.endFixed || task.fixedEnd);
+    task.requiresStaff = toBooleanFlag(task.requiresStaff || task.requiereStaff);
     task.durationMin = Number.isFinite(Number(task.durationMin)) ? Math.max(5, Math.round(Number(task.durationMin))) : null;
     if(task.startMin != null && task.endMin != null){
       const computedDuration = Math.max(5, task.endMin - task.startMin);
@@ -3432,7 +3447,8 @@
 
   const projectStartCandidate = getInitialMinuteFor("CLIENTE");
   const ABSOLUTE_DAY_MIN = 0;
-  const DEFAULT_DAY_LOWER_MIN = projectStartCandidate!=null ? normalizeMinute(projectStartCandidate) : 60;
+  const SUGGESTED_DAY_LOWER_MIN = projectStartCandidate!=null ? normalizeMinute(projectStartCandidate) : 9*60;
+  const DEFAULT_DAY_LOWER_MIN = ABSOLUTE_DAY_MIN;
   const DEFAULT_DAY_UPPER_MIN = DAY_MAX_MIN;
 
   const ensureDurationValue = (task)=>{
@@ -3489,6 +3505,24 @@
     return total;
   };
 
+  const taskHasAssignedStaff = (task)=> Array.isArray(task?.assignedStaffIds) && task.assignedStaffIds.some(Boolean);
+  const taskRequiresPresence = (task)=> !!task && (task.requiresStaff || taskHasAssignedStaff(task));
+  const isClientTransportTask = (task)=> !!task && task.actionType === ACTION_TYPE_TRANSPORT && task.structureRelation === "milestone";
+  const taskHasExplicitStart = (task)=>{
+    if(!task) return false;
+    if(!Number.isFinite(Number(task.startMin))) return false;
+    if(task.locked || task.startFixed) return true;
+    if(isClientTransportTask(task)) return taskRequiresPresence(task);
+    return false;
+  };
+  const taskHasExplicitEnd = (task)=>{
+    if(!task) return false;
+    if(!Number.isFinite(Number(task.endMin))) return false;
+    if(task.locked || task.endFixed) return true;
+    if(isClientTransportTask(task)) return taskRequiresPresence(task);
+    return false;
+  };
+
   const deriveTaskWindow = (task)=>{
     const relation=(task?.structureRelation)||"milestone";
     const duration=ensureDurationValue(task);
@@ -3501,11 +3535,13 @@
       const descendantsDuration=sumRelationDescendantsDuration(task, "pre");
       const latestEndBase=(rootStart!=null) ? rootStart - ancestorsDuration : DEFAULT_DAY_UPPER_MIN;
       const latestEnd=normalizeMinute(Math.min(DEFAULT_DAY_UPPER_MIN, latestEndBase));
-      let earliestStart = latestEnd!=null ? latestEnd - (duration + descendantsDuration) : DEFAULT_DAY_LOWER_MIN;
+      const fallbackLower = SUGGESTED_DAY_LOWER_MIN ?? DEFAULT_DAY_LOWER_MIN;
+      let earliestStart = latestEnd!=null ? latestEnd - (duration + descendantsDuration) : fallbackLower;
       if(earliestStart!=null) earliestStart = normalizeMinute(Math.max(ABSOLUTE_DAY_MIN, earliestStart));
       const startMin = earliestStart;
       const endMin = startMin!=null ? normalizeMinute(startMin + duration) : null;
-      let startMax = latestEnd!=null ? normalizeMinute(Math.max(startMin ?? DEFAULT_DAY_LOWER_MIN, latestEnd - duration)) : startMin;
+      const baselineStart = (startMin!=null ? startMin : fallbackLower);
+      let startMax = latestEnd!=null ? normalizeMinute(Math.max(baselineStart, latestEnd - duration)) : startMin;
       if(startMax!=null && startMin!=null && startMax < startMin) startMax = startMin;
       const endMax = latestEnd!=null ? normalizeMinute(Math.max(endMin ?? latestEnd, latestEnd)) : endMin;
       return {
@@ -3520,13 +3556,15 @@
     if(relation==="post"){
       const ancestorsDuration=sumRelationAncestorDurations(task, "post");
       const descendantsDuration=sumRelationDescendantsDuration(task, "post");
-      const earliestStartBase=(rootEnd!=null) ? rootEnd + ancestorsDuration : DEFAULT_DAY_LOWER_MIN;
+      const fallbackLower = SUGGESTED_DAY_LOWER_MIN ?? DEFAULT_DAY_LOWER_MIN;
+      const earliestStartBase=(rootEnd!=null) ? rootEnd + ancestorsDuration : fallbackLower;
       const startMin=normalizeMinute(Math.max(ABSOLUTE_DAY_MIN, earliestStartBase));
       const endMin=startMin!=null ? normalizeMinute(startMin + duration) : null;
       const latestEndBase=(rootEnd!=null) ? rootEnd + ancestorsDuration + duration + descendantsDuration : DEFAULT_DAY_UPPER_MIN;
       let endMax=normalizeMinute(Math.min(DEFAULT_DAY_UPPER_MIN, latestEndBase));
       if(endMin!=null && endMax!=null && endMax < endMin) endMax = endMin;
-      let startMax=endMax!=null ? normalizeMinute(Math.max(startMin ?? DEFAULT_DAY_LOWER_MIN, endMax - duration - descendantsDuration)) : startMin;
+      const baselineStart = (startMin!=null ? startMin : fallbackLower);
+      let startMax=endMax!=null ? normalizeMinute(Math.max(baselineStart, endMax - duration - descendantsDuration)) : startMin;
       if(startMax!=null && startMin!=null && startMax < startMin) startMax = startMin;
       return {
         lower:startMin,
@@ -3538,7 +3576,8 @@
       };
     }
     if(relation==="parallel"){
-      const startMin = rootStart!=null ? normalizeMinute(rootStart) : DEFAULT_DAY_LOWER_MIN;
+      const fallbackLower = SUGGESTED_DAY_LOWER_MIN ?? DEFAULT_DAY_LOWER_MIN;
+      const startMin = rootStart!=null ? normalizeMinute(rootStart) : fallbackLower;
       let endMax;
       if(rootEnd!=null){
         endMax = normalizeMinute(rootEnd);
@@ -3744,14 +3783,19 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
       }) : null;
       const root=rootTaskFor(task);
       const depth=breadcrumb.length?breadcrumb.length-1:0;
+      const startFixed=taskHasExplicitStart(task);
+      const endFixed=taskHasExplicitEnd(task);
+      const explicitStart=startFixed ? normalizeMinute(Number(task.startMin)) : null;
+      const explicitEnd=endFixed ? normalizeMinute(Number(task.endMin)) : null;
+      const requiresPresence=taskRequiresPresence(task);
       return {
         id:task.id,
         nombre:task.actionName||labelForTask(task),
         tipo:task.structureRelation||"milestone",
         tipoAccion:task.actionType||ACTION_TYPE_NORMAL,
         duracionMin:ensureDurationValue(task),
-        inicioFijo:task.startMin!=null?toHHMM(task.startMin):null,
-        finFijo:task.endMin!=null?toHHMM(task.endMin):null,
+        inicioFijo:explicitStart!=null?toHHMM(explicitStart):null,
+        finFijo:explicitEnd!=null?toHHMM(explicitEnd):null,
         limiteInferior:effectiveStartMin!=null?toHHMM(effectiveStartMin):null,
         limiteSuperior:effectiveEndMax!=null?toHHMM(effectiveEndMax):null,
         dependeDe:task.structureParentId||null,
@@ -3761,6 +3805,8 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
         asignadoA:assigned,
         jerarquia:breadcrumb,
         profundidad:depth,
+        requiresStaff:requiresPresence,
+        requiereStaff:requiresPresence,
         bloqueada:!!task.locked,
         ventana:{
           original:{
@@ -4064,6 +4110,10 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
             }
             const originId=pickFirstString(session,["originId","origenId","origin","origen"]);
             const destinationId=pickFirstString(session,["destinationId","destinoId","destination","destino","locationId","localizacionId"]);
+            if(originId && destinationId && originId===destinationId){
+              staffWarnings.add(`Sesión ${idx+1}: transporte omitido (origen y destino iguales).`);
+              return;
+            }
             const vehicleId=resolveVehicleId(session);
             const actionName=pickFirstString(session,["actionName","taskName","nombre"]) || "Transporte";
             const comentario=pickFirstString(session,["comment","comentario","notes"]);
@@ -4095,6 +4145,10 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
           if(destinationId) sessionEntry.destinationId = destinationId;
           const vehicleId=resolveVehicleId(session);
           if(vehicleId) sessionEntry.vehicleId = vehicleId;
+          if(sessionEntry.originId && sessionEntry.destinationId && sessionEntry.originId===sessionEntry.destinationId){
+            staffWarnings.add(`${labelForTask(task)}: transporte omitido (origen y destino iguales).`);
+            return;
+          }
         }
         const enforced=enforceSessionConstraintsForTask(task, sessionEntry, staffWarnings);
         if(!enforced){
@@ -4303,24 +4357,23 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
         if(staffWarnings) staffWarnings.add(`${label}: duración ajustada a ${duration} minutos según catálogo.`);
       }
     }
-    const fixedStart=Number.isFinite(Number(task.startMin)) ? normalizeMinute(Number(task.startMin)) : null;
-    const fixedEnd=Number.isFinite(Number(task.endMin)) ? normalizeMinute(Number(task.endMin)) : null;
-    const lockedStart = !!task.locked || task.structureRelation==="milestone" || (fixedStart!=null && fixedEnd!=null);
-    if(fixedStart!=null){
-      if(start!=null && start!==fixedStart && staffWarnings){
-        staffWarnings.add(`${label}: inicio reajustado a ${toHHMM(fixedStart)} por restricción fija.`);
+    const explicitStart=taskHasExplicitStart(task) ? normalizeMinute(Number(task.startMin)) : null;
+    const explicitEnd=taskHasExplicitEnd(task) ? normalizeMinute(Number(task.endMin)) : null;
+    if(explicitStart!=null){
+      if(start!=null && start!==explicitStart && staffWarnings){
+        staffWarnings.add(`${label}: inicio reajustado a ${toHHMM(explicitStart)} por restricción fija.`);
       }
-      start=fixedStart;
-      if(fixedEnd!=null){
-        end=fixedEnd;
+      start=explicitStart;
+      if(explicitEnd!=null){
+        end=explicitEnd;
       }else{
         end=normalizeMinute(start + duration);
       }
-    }else if(fixedEnd!=null && !lockedStart){
-      if(end!=null && end!==fixedEnd && staffWarnings){
-        staffWarnings.add(`${label}: fin reajustado a ${toHHMM(fixedEnd)} por restricción fija.`);
+    }else if(explicitEnd!=null){
+      if(end!=null && end!==explicitEnd && staffWarnings){
+        staffWarnings.add(`${label}: fin reajustado a ${toHHMM(explicitEnd)} por restricción fija.`);
       }
-      end=fixedEnd;
+      end=explicitEnd;
       start=normalizeMinute(end - duration);
     }
 
@@ -4546,24 +4599,21 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
     if(!Number.isFinite(normalized)) return { ok:false, reason:"inicio inválido" };
     if(!task) return { ok:true, start:normalized };
     const label=labelForTask(task);
-    const fixedStart=Number.isFinite(Number(task.startMin)) ? normalizeMinute(Number(task.startMin)) : null;
-    const fixedEnd=Number.isFinite(Number(task.endMin)) ? normalizeMinute(Number(task.endMin)) : null;
-    if(task.locked || task.structureRelation==="milestone" || (fixedStart!=null && fixedEnd!=null)){
-      if(fixedStart!=null && normalized!==fixedStart){
-        return { ok:false, reason:`inicio fijo en ${toHHMM(fixedStart)}` };
-      }
-      if(fixedStart==null){
-        return { ok:false, reason:`${label}: tarea bloqueada` };
-      }
-      return { ok:true, start:fixedStart };
+    const explicitStart=taskHasExplicitStart(task) ? normalizeMinute(Number(task.startMin)) : null;
+    const explicitEnd=taskHasExplicitEnd(task) ? normalizeMinute(Number(task.endMin)) : null;
+    if(task.locked && explicitStart==null && explicitEnd==null){
+      return { ok:false, reason:`${label}: tarea bloqueada` };
     }
-    if(fixedStart!=null && normalized!==fixedStart){
-      return { ok:false, reason:`inicio fijo en ${toHHMM(fixedStart)}` };
+    if(explicitStart!=null){
+      if(normalized!==explicitStart){
+        return { ok:false, reason:`inicio fijo en ${toHHMM(explicitStart)}` };
+      }
+      return { ok:true, start:explicitStart };
     }
-    if(fixedEnd!=null){
-      const requiredStart=normalizeMinute(fixedEnd - duration);
+    if(explicitEnd!=null){
+      const requiredStart=normalizeMinute(explicitEnd - duration);
       if(normalized!==requiredStart){
-        return { ok:false, reason:`fin fijo en ${toHHMM(fixedEnd)}` };
+        return { ok:false, reason:`fin fijo en ${toHHMM(explicitEnd)}` };
       }
     }
     const window=deriveTaskWindow(task);
