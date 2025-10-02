@@ -3926,6 +3926,9 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
         {role:"user",content:JSON.stringify(payload)}
       ]
     };
+    try{
+      console.log("[ScheduleAI] Payload enviado", body);
+    }catch(err){}
     let response;
     try{
       response=await fetch("https://api.openai.com/v1/chat/completions",{
@@ -4132,11 +4135,7 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
           staffWarnings.add(`${labelForTask(task)}: horario incompleto devuelto por la IA.`);
           return;
         }
-        task.startMin=start;
-        task.endMin=end;
-        task.durationMin=Math.max(5, roundToFive(end-start));
-        task.assignedStaffIds=[staffId];
-        scheduledTaskIds.add(task.id);
+        ensureTaskAssignment(task, staffId);
         const sessionEntry=makeTaskSession(task, start, end);
         if(actionTypeHint===ACTION_TYPE_TRANSPORT){
           sessionEntry.actionType=ACTION_TYPE_TRANSPORT;
@@ -4147,6 +4146,11 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
           const vehicleId=resolveVehicleId(session);
           if(vehicleId) sessionEntry.vehicleId = vehicleId;
         }
+        const enforced=enforceSessionConstraintsForTask(task, sessionEntry, staffWarnings);
+        if(!enforced){
+          return;
+        }
+        scheduledTaskIds.add(task.id);
         sessions.push(sessionEntry);
       });
       const normalizedSessions=insertMissingTransportsForStaff(staffId, sessions, staffWarnings);
@@ -4308,60 +4312,223 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
     return session;
   };
 
+  const ensureTaskAssignment = (task, staffId)=>{
+    if(!task || !staffId) return;
+    const current=Array.isArray(task.assignedStaffIds) ? task.assignedStaffIds.slice() : [];
+    if(!current.includes(staffId)) current.push(staffId);
+    task.assignedStaffIds=current;
+  };
+
+  const enforceSessionConstraintsForTask = (task, session, staffWarnings)=>{
+    if(!task || !session) return null;
+    const label=labelForTask(task);
+    const duration=ensureDurationValue(task);
+    const info=ensureSessionTiming(session);
+    let start=info.start;
+    let end=info.end;
+    if(start==null && end==null){
+      if(staffWarnings) staffWarnings.add(`${label}: la IA no proporcionó horario completo.`);
+      return null;
+    }
+    if(start!=null && end==null){
+      end=normalizeMinute(start + duration);
+    }else if(end!=null && start==null){
+      start=normalizeMinute(end - duration);
+    }
+    if(start!=null && end!=null){
+      const span=end-start;
+      if(span!==duration){
+        end=normalizeMinute(start + duration);
+        session.endMin=end;
+        session.durationMin=duration;
+        if(staffWarnings) staffWarnings.add(`${label}: duración ajustada a ${duration} minutos según catálogo.`);
+      }
+    }
+    const fixedStart=Number.isFinite(Number(task.startMin)) ? normalizeMinute(Number(task.startMin)) : null;
+    const fixedEnd=Number.isFinite(Number(task.endMin)) ? normalizeMinute(Number(task.endMin)) : null;
+    const lockedStart = !!task.locked || task.structureRelation==="milestone" || (fixedStart!=null && fixedEnd!=null);
+    if(fixedStart!=null){
+      if(start!=null && start!==fixedStart && staffWarnings){
+        staffWarnings.add(`${label}: inicio reajustado a ${toHHMM(fixedStart)} por restricción fija.`);
+      }
+      start=fixedStart;
+      if(fixedEnd!=null){
+        end=fixedEnd;
+      }else{
+        end=normalizeMinute(start + duration);
+      }
+    }else if(fixedEnd!=null && !lockedStart){
+      if(end!=null && end!==fixedEnd && staffWarnings){
+        staffWarnings.add(`${label}: fin reajustado a ${toHHMM(fixedEnd)} por restricción fija.`);
+      }
+      end=fixedEnd;
+      start=normalizeMinute(end - duration);
+    }
+
+    const window=deriveTaskWindow(task);
+    const startLower=window.startMin ?? window.lower ?? null;
+    const startUpper=window.startMax ?? window.upper ?? null;
+    const endMin=window.endMin ?? null;
+    const endMax=window.endMax ?? null;
+
+    if(start!=null){
+      if(startLower!=null && start<startLower){
+        start=normalizeMinute(startLower);
+        end=normalizeMinute(start + duration);
+        if(staffWarnings) staffWarnings.add(`${label}: inicio ajustado al mínimo permitido (${toHHMM(startLower)}).`);
+      }
+      if(startUpper!=null && start>startUpper){
+        const candidate=normalizeMinute(startUpper);
+        const candidateEnd=normalizeMinute(candidate + duration);
+        if(endMax!=null && candidateEnd>endMax){
+          if(staffWarnings) staffWarnings.add(`${label}: no cabe dentro de la ventana asignada.`);
+        }else{
+          start=candidate;
+          end=candidateEnd;
+          if(staffWarnings) staffWarnings.add(`${label}: inicio limitado al máximo (${toHHMM(startUpper)}).`);
+        }
+      }
+    }
+
+    if(end!=null){
+      if(endMin!=null && end<endMin){
+        end=normalizeMinute(endMin);
+        start=normalizeMinute(end - duration);
+        if(staffWarnings) staffWarnings.add(`${label}: fin ajustado al mínimo permitido (${toHHMM(endMin)}).`);
+      }
+      if(endMax!=null && end>endMax){
+        const latestStart=normalizeMinute(endMax - duration);
+        if(startLower!=null && latestStart<startLower){
+          if(staffWarnings) staffWarnings.add(`${label}: excede la ventana disponible; requiere ${duration} minutos.`);
+        }else{
+          end=normalizeMinute(endMax);
+          start=normalizeMinute(end - duration);
+          if(staffWarnings) staffWarnings.add(`${label}: fin limitado al máximo (${toHHMM(endMax)}).`);
+        }
+      }
+    }
+
+    session.startMin=start;
+    session.endMin=end;
+    session.durationMin=duration;
+    return {start,end,duration};
+  };
+
+  const getTaskForSession = (session)=>{
+    if(!session || !session.inheritFromId) return null;
+    return getTaskById(session.inheritFromId);
+  };
+
   const findLocationById = (id)=> (state.locations||[]).find(loc=>loc.id===id) || null;
 
-  const estimateTravelInfo = (originId, destinationId)=>{
-    if(!originId || !destinationId || originId===destinationId) return { duration:0, vehicleId:defaultVehicleId() };
+  const transportDurationKey = (originId, destinationId, vehicleId)=>`${originId||""}→${destinationId||""}#${vehicleId||"*"}`;
+
+  const parseTransportDuration = (value)=>{
+    const num=Number(value);
+    if(!Number.isFinite(num) || num<=0) return null;
+    return Math.max(5, roundToFive(num));
+  };
+
+  const readTransportSettings = ()=>{
+    const cfg=state.transportes||{};
+    const entries=Array.isArray(cfg.tiempos)?cfg.tiempos:[];
+    const map=new Map();
+    entries.forEach(item=>{
+      const origin=item?.origenId ?? item?.originId ?? item?.origen ?? null;
+      const destination=item?.destinoId ?? item?.destinationId ?? item?.destino ?? null;
+      if(!origin || !destination) return;
+      const vehicle=item?.vehiculoId ?? item?.vehicleId ?? null;
+      const duration=parseTransportDuration(item?.duracionMin ?? item?.durationMin ?? item?.duracion ?? item?.minutes ?? item?.tiempo);
+      if(duration==null) return;
+      map.set(transportDurationKey(origin, destination, vehicle||null), duration);
+    });
+    return {
+      required: cfg?.requerido!==false,
+      defaultVehicle: cfg?.vehiculoPorDefecto || null,
+      durations: map
+    };
+  };
+
+  const resolveConfiguredTransport = (originId, destinationId, vehicleId)=>{
+    if(!originId || !destinationId) return null;
+    const settings=readTransportSettings();
+    const defaultVehicle=settings.defaultVehicle || defaultVehicleId();
+    const candidate=vehicleId || defaultVehicle;
+    const attempts=[
+      transportDurationKey(originId, destinationId, candidate),
+      transportDurationKey(originId, destinationId, null)
+    ];
+    for(const key of attempts){
+      if(settings.durations.has(key)){
+        return { duration:settings.durations.get(key), vehicleId:candidate || defaultVehicle };
+      }
+    }
+    return null;
+  };
+
+  const resolveVehicleForTransport = (vehicleIdHint)=>{
+    const vehicles=state.vehicles||[];
+    if(vehicleIdHint){
+      const match=vehicles.find(v=>String(v.id)===String(vehicleIdHint));
+      if(match) return match;
+    }
+    const settings=readTransportSettings();
+    if(settings.defaultVehicle){
+      const found=vehicles.find(v=>String(v.id)===String(settings.defaultVehicle));
+      if(found) return found;
+    }
+    const walk=vehicles.find(v=>v.id==="V_WALK");
+    if(walk) return walk;
+    return vehicles[0] || null;
+  };
+
+  const estimateTravelInfo = (originId, destinationId, vehicleHint)=>{
+    if(!originId || !destinationId || originId===destinationId){
+      const fallbackVehicle=vehicleHint || readTransportSettings().defaultVehicle || defaultVehicleId();
+      return { duration:0, vehicleId:fallbackVehicle };
+    }
+    const configured=resolveConfiguredTransport(originId, destinationId, vehicleHint);
+    if(configured) return configured;
     const origin=findLocationById(originId);
     const destination=findLocationById(destinationId);
     if(!origin || !destination) return null;
-    const defaultVehicle=defaultVehicleId();
-    const vehicles=state.vehicles||[];
-    const vehicle=vehicles.find(v=>v.id===defaultVehicle) || vehicles[0] || null;
+    const vehicle=resolveVehicleForTransport(vehicleHint);
     const speed=toNumberOrNullStrict(vehicle?.speedKmph) ?? 4;
     const distance=haversineDistanceKm(origin, destination);
     const duration=estimateTravelMinutes(distance, speed);
     if(duration==null) return null;
-    return { duration, vehicleId:(vehicle?.id||defaultVehicle||null) };
+    return { duration, vehicleId:(vehicle?.id || vehicleHint || readTransportSettings().defaultVehicle || defaultVehicleId()) };
   };
 
-  const buildTransportSessionBetween = (originId, destinationId, earliestStart, nextStart, staffWarnings)=>{
+  const buildTransportSessionBetween = (originId, destinationId, arrival, staffWarnings, travelInfo)=>{
     const originName=locationNameById(originId)||originId||"Origen";
     const destinationName=locationNameById(destinationId)||destinationId||"Destino";
-    const travelInfo=estimateTravelInfo(originId, destinationId);
-    if(!travelInfo){
+    const info=travelInfo || estimateTravelInfo(originId, destinationId);
+    if(!info){
       if(staffWarnings) staffWarnings.add(`Transporte ${originName} → ${destinationName}: no se pudo estimar la duración.`);
       return null;
     }
-    if(!Number.isFinite(travelInfo.duration) || travelInfo.duration<=0){
+    if(!Number.isFinite(info.duration) || info.duration<=0){
       return null;
     }
-    let end=nextStart!=null?normalizeMinute(nextStart):null;
-    if(end==null && earliestStart!=null){
-      end=normalizeMinute(earliestStart + travelInfo.duration);
-    }
+    const end=minuteValueOrNull(arrival);
     if(end==null){
-      if(staffWarnings) staffWarnings.add(`Transporte ${originName} → ${destinationName}: no hay hueco definido para ubicar el trayecto.`);
+      if(staffWarnings) staffWarnings.add(`Transporte ${originName} → ${destinationName}: no hay hora de llegada definida.`);
       return null;
     }
-    let start=normalizeMinute(end - travelInfo.duration);
-    if(earliestStart!=null && start<earliestStart){
-      start=normalizeMinute(earliestStart);
-      end=normalizeMinute(start + travelInfo.duration);
-    }
-    if(start==null || end==null || end<=start){
-      if(staffWarnings) staffWarnings.add(`Transporte ${originName} → ${destinationName}: horario inválido al intentar insertarlo.`);
+    const start=normalizeMinute(end - info.duration);
+    if(start==null || end<=start){
+      if(staffWarnings) staffWarnings.add(`Transporte ${originName} → ${destinationName}: horario inválido al generarlo.`);
       return null;
     }
-    const session=makeSyntheticTransportSession({
+    return makeSyntheticTransportSession({
       start,
       end,
       originId,
       destinationId,
-      vehicleId:travelInfo.vehicleId,
+      vehicleId:info.vehicleId,
       actionName:`Transporte ${originName} → ${destinationName}`
     });
-    return session;
   };
 
   const minuteValueOrNull = (value)=>{
@@ -4415,18 +4582,84 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
     return { start:normalizedStart, end:newEnd };
   };
 
+  const evaluateSessionShift = (task, desiredStart, duration)=>{
+    const normalized=normalizeMinute(desiredStart);
+    if(!Number.isFinite(normalized)) return { ok:false, reason:"inicio inválido" };
+    if(!task) return { ok:true, start:normalized };
+    const label=labelForTask(task);
+    const fixedStart=Number.isFinite(Number(task.startMin)) ? normalizeMinute(Number(task.startMin)) : null;
+    const fixedEnd=Number.isFinite(Number(task.endMin)) ? normalizeMinute(Number(task.endMin)) : null;
+    if(task.locked || task.structureRelation==="milestone" || (fixedStart!=null && fixedEnd!=null)){
+      if(fixedStart!=null && normalized!==fixedStart){
+        return { ok:false, reason:`inicio fijo en ${toHHMM(fixedStart)}` };
+      }
+      if(fixedStart==null){
+        return { ok:false, reason:`${label}: tarea bloqueada` };
+      }
+      return { ok:true, start:fixedStart };
+    }
+    if(fixedStart!=null && normalized!==fixedStart){
+      return { ok:false, reason:`inicio fijo en ${toHHMM(fixedStart)}` };
+    }
+    if(fixedEnd!=null){
+      const requiredStart=normalizeMinute(fixedEnd - duration);
+      if(normalized!==requiredStart){
+        return { ok:false, reason:`fin fijo en ${toHHMM(fixedEnd)}` };
+      }
+    }
+    const window=deriveTaskWindow(task);
+    const startLower=window.startMin ?? window.lower ?? null;
+    const startUpper=window.startMax ?? window.upper ?? null;
+    const endMin=window.endMin ?? null;
+    const endMax=window.endMax ?? null;
+    const newEnd=normalizeMinute(normalized + duration);
+    if(startLower!=null && normalized<startLower) return { ok:false, reason:`inicio mínimo ${toHHMM(startLower)}` };
+    if(startUpper!=null && normalized>startUpper) return { ok:false, reason:`inicio máximo ${toHHMM(startUpper)}` };
+    if(endMin!=null && newEnd<endMin) return { ok:false, reason:`fin mínimo ${toHHMM(endMin)}` };
+    if(endMax!=null && newEnd>endMax) return { ok:false, reason:`fin máximo ${toHHMM(endMax)}` };
+    return { ok:true, start:normalized };
+  };
+
+  const tryShiftSessionStart = (session, desiredStart, task, staffWarnings, buildMessage)=>{
+    if(desiredStart==null) return false;
+    const duration=getSessionDurationValue(session);
+    if(duration==null) return false;
+    const evaluation=evaluateSessionShift(task, desiredStart, duration);
+    if(!evaluation.ok){
+      if(staffWarnings){
+        const message=typeof buildMessage === "function"
+          ? buildMessage(false, evaluation.reason, normalizeMinute(desiredStart))
+          : buildMessage;
+        if(message) staffWarnings.add(String(message));
+      }
+      return false;
+    }
+    const shifted=shiftSessionStartTo(session, evaluation.start);
+    if(shifted && staffWarnings){
+      const message=typeof buildMessage === "function"
+        ? buildMessage(true, null, evaluation.start)
+        : buildMessage;
+      if(message) staffWarnings.add(String(message));
+    }
+    return !!shifted;
+  };
+
   const adjustSessionStartIfNeeded = (session, minStart, staffWarnings, buildMessage)=>{
     if(minStart==null) return;
     const info=ensureSessionTiming(session);
     if(info.duration==null) return;
     const currentStart=info.start;
-    if(currentStart==null || currentStart<minStart){
-      const shifted=shiftSessionStartTo(session, minStart);
-      if(shifted && staffWarnings){
-        const message=typeof buildMessage === "function" ? buildMessage(minStart, shifted) : buildMessage;
-        if(message) staffWarnings.add(String(message));
+    if(currentStart!=null && currentStart>=minStart) return;
+    const task=getTaskForSession(session);
+    tryShiftSessionStart(session, minStart, task, staffWarnings, (success, reason, appliedStart)=>{
+      if(success){
+        if(typeof buildMessage === "function") return buildMessage(appliedStart);
+        return buildMessage;
       }
-    }
+      const base=describeSession(session);
+      const detail=reason ? `${base}: no puede ajustarse (${reason}).` : `${base}: no puede ajustarse.`;
+      return detail;
+    });
   };
 
   const getSessionDestination = (session)=>{
@@ -4455,27 +4688,79 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
     let availableEnd=null;
     sorted.forEach((session)=>{
       let info=ensureSessionTiming(session);
-      const plannedStart=info.start;
+      const sessionType=normalizeActionTypeValue(session?.actionType);
+      const sessionTask=getTaskForSession(session);
+
+      if(sessionType===ACTION_TYPE_TRANSPORT){
+        adjustSessionStartIfNeeded(
+          session,
+          availableEnd,
+          staffWarnings,
+          (min)=>`${describeSession(session)}: ajustado a ${toHHMM(min)} para evitar solapes.`
+        );
+        info=ensureSessionTiming(session);
+        if(info.end!=null) availableEnd=info.end;
+        augmented.push(session);
+        previousDestination=getSessionDestination(session) || previousDestination;
+        return;
+      }
+
       const fallbackOrigin=previousDestination || initialLocation;
       const currentOrigin=getSessionOrigin(session, fallbackOrigin);
-      if(previousDestination && currentOrigin && previousDestination!==currentOrigin){
-        const transport=buildTransportSessionBetween(previousDestination, currentOrigin, availableEnd, plannedStart ?? null, staffWarnings);
-        if(transport){
-          const transportEnd=minuteValueOrNull(transport.endMin);
-          augmented.push(transport);
-          if(transportEnd!=null){
-            availableEnd=transportEnd;
-            adjustSessionStartIfNeeded(
-              session,
-              transportEnd,
-              staffWarnings,
-              (min)=>`${describeSession(session)}: ajustado a ${toHHMM(min)} para respetar el transporte hasta ${locationNameById(currentOrigin)||currentOrigin}.`
-            );
-            info=ensureSessionTiming(session);
+      const needsTransport = previousDestination && currentOrigin && previousDestination!==currentOrigin;
+      if(needsTransport){
+        const vehicleHint=session.vehicleId || sessionTask?.vehicleId || null;
+        const travelInfo=estimateTravelInfo(previousDestination, currentOrigin, vehicleHint);
+        if(!travelInfo){
+          const originName=locationNameById(previousDestination)||previousDestination||"Origen";
+          const destName=locationNameById(currentOrigin)||currentOrigin||"Destino";
+          if(staffWarnings) staffWarnings.add(`Transporte ${originName} → ${destName}: no se pudo estimar la duración.`);
+        }else if(travelInfo.duration>0){
+          const arrival=info.start;
+          if(arrival==null){
+            const originName=locationNameById(previousDestination)||previousDestination||"Origen";
+            if(staffWarnings) staffWarnings.add(`${describeSession(session)}: falta hora de inicio para insertar transporte desde ${originName}.`);
+          }else{
+            const earliestStart=availableEnd;
+            let transportStart=normalizeMinute(arrival - travelInfo.duration);
+            if(earliestStart!=null && (transportStart==null || transportStart<earliestStart)){
+              const desiredStart=normalizeMinute((earliestStart ?? 0) + travelInfo.duration);
+              const adjusted=tryShiftSessionStart(
+                session,
+                desiredStart,
+                sessionTask,
+                staffWarnings,
+                (success, reason, appliedStart)=>{
+                  const originName=locationNameById(previousDestination)||previousDestination||"Origen";
+                  if(success){
+                    return `${describeSession(session)}: ajustado a ${toHHMM(appliedStart)} para respetar el transporte desde ${originName}.`;
+                  }
+                  const detail=reason || "restricciones del catálogo";
+                  return `${describeSession(session)}: no se puede mover para insertar transporte (${detail}).`;
+                }
+              );
+              info=ensureSessionTiming(session);
+              if(adjusted){
+                transportStart=normalizeMinute(info.start - travelInfo.duration);
+              }
+            }
+            if(transportStart!=null && (earliestStart==null || transportStart>=earliestStart)){
+              const transportSession=buildTransportSessionBetween(previousDestination, currentOrigin, info.start, staffWarnings, travelInfo);
+              if(transportSession){
+                augmented.push(transportSession);
+                const transportEnd=minuteValueOrNull(transportSession.endMin);
+                if(transportEnd!=null) availableEnd=transportEnd;
+                previousDestination=getSessionDestination(transportSession) || currentOrigin;
+              }
+            }else if(staffWarnings){
+              const originName=locationNameById(previousDestination)||previousDestination||"Origen";
+              const destName=locationNameById(currentOrigin)||currentOrigin||"Destino";
+              staffWarnings.add(`${describeSession(session)}: no hay hueco para el transporte ${originName} → ${destName}.`);
+            }
           }
-          previousDestination=getSessionDestination(transport) || currentOrigin || previousDestination;
         }
       }
+
       adjustSessionStartIfNeeded(
         session,
         availableEnd,
