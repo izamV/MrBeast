@@ -3872,6 +3872,33 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
     };
   };
 
+  const safeStringifyForPopup = (value)=>{
+    if(typeof value === "string") return value;
+    try{
+      return JSON.stringify(value, null, 2);
+    }catch(err){
+      try{
+        return String(value);
+      }catch(e){
+        return "";
+      }
+    }
+  };
+
+  const showCopyablePopup = (title, content)=>{
+    const text=safeStringifyForPopup(content);
+    const message=`${title}\n\nCopia el contenido y presiona Aceptar para continuar.`;
+    if(typeof window.prompt === "function"){
+      try{
+        window.prompt(message, text);
+        return;
+      }catch(err){
+        // fallback to alert below
+      }
+    }
+    window.alert(`${message}\n\n${text}`);
+  };
+
   const readOpenAiApiKey = ()=>{
     try{
       const stored=localStorage.getItem(SCHEDULE_AI_STORAGE_KEY);
@@ -3922,7 +3949,9 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
       const msg=detail?`OpenAI respondió con un error: ${detail}`:"OpenAI respondió con un error inesperado.";
       throw new Error(msg);
     }
-    return response.json();
+    const data=await response.json();
+    showCopyablePopup("Respuesta de ChatGPT", data?.choices?.[0]?.message?.content || data);
+    return data;
   };
 
   const parseAiScheduleResponse = (data)=>{
@@ -4187,6 +4216,7 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
     const staffList=(state.staff||[]);
     if(!staffList.length) throw new Error("Añade miembros del staff para generar los horarios.");
     const payload=collectScheduleAiPayload();
+    showCopyablePopup("Mensaje enviado a ChatGPT", payload);
     const response=await requestScheduleFromAI(payload);
     const parsed=parseAiScheduleResponse(response);
     return applyAiScheduleResult(parsed);
