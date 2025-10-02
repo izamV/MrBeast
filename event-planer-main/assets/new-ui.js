@@ -61,6 +61,23 @@
     return false;
   };
 
+  const safeDeepClone = (value)=>{
+    if(value===undefined) return undefined;
+    if(value===null) return null;
+    if(typeof window?.structuredClone === "function"){
+      try{
+        return window.structuredClone(value);
+      }catch(err){
+        // fall back to JSON clone below
+      }
+    }
+    try{
+      return JSON.parse(JSON.stringify(value));
+    }catch(err){
+      return null;
+    }
+  };
+
   const ensureMaterial = (m)=>({
     materialTypeId: m?.materialTypeId || null,
     cantidad: Math.max(1, Math.round(Number.isFinite(Number(m?.cantidad)) ? Number(m.cantidad) : 1))
@@ -3679,6 +3696,9 @@
   const SCHEDULE_AI_RESPONSE_FORMAT = { type: "json_object" };
   const SCHEDULE_AI_STORAGE_KEY = "eventplan.openai.key";
   const SCHEDULE_AI_SYSTEM_PROMPT = `Eres un planificador de eventos. Recibirás un JSON con la siguiente estructura:
+- "version" y "generado": metadatos del mensaje.
+- "estadoOriginal": copia literal del estado completo del editor (proyecto, sesiones actuales, tareas del cliente, catálogos, asignaciones, ventanas y relaciones) para que dispongas de toda la información sin filtrar.
+- "catalogos": listados normalizados de materiales, vehículos, localizaciones y tipos de tarea.
 - "proyecto": metadatos del evento, incluyendo "inicioDia" (hora sugerida de arranque) y "localizacionInicial".
 - "parametros": recordatorios de criterios de optimización.
 - "staff": miembros disponibles con sus identificadores, roles, "inicioPreferido" y "localizacionInicial".
@@ -3686,6 +3706,8 @@
 - "vehiculos": medios de transporte con su "velocidadKmph" y otros atributos.
 - "transportes": reglas logísticas (si son requeridos, "vehiculoPorDefecto" y "tiempos" estimados por vehículo entre pares de localizaciones).
 - "tareas": lista de actividades. Cada tarea incluye "id", "nombre", "tipo" (milestone, pre, post, parallel), "tipoAccion", "duracionMin", "inicioFijo"/"finFijo" cuando aplica, ventanas "limiteInferior"/"limiteSuperior" ya calculadas junto con una "ventana.derivada" de referencia, jerarquía, dependencia, asignaciones de staff y su localización.
+- "detalleCadenas": resumen explícito de pre, post y paralelas con sus relaciones padre, asignaciones y ventanas manuales.
+- "matrizViajes": tabla completa de desplazamientos estimados entre todas las localizaciones y vehículos.
 
 Debes devolver únicamente un JSON con el formato {"staff":[{"staffId":"ID_DEL_STAFF","sessions":[{"taskId":"ID_DE_TAREA","start":"HH:MM","end":"HH:MM"}]}],"warnings":[]}. Usa siempre formato 24h HH:MM.
 
@@ -3832,7 +3854,7 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
         notas:task.comentario||""
       };
     });
-    return {
+    const payload={
       proyecto:{
         nombre:state.project?.nombre||"",
         fecha:state.project?.fecha||"",
@@ -3871,6 +3893,45 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
       },
       tareas:taskPayload
     };
+
+    payload.version="2.0";
+    payload.generado=new Date().toISOString();
+    payload.estadoOriginal=safeDeepClone({
+      project:state.project||{},
+      parametros:state.parametros||{},
+      staff:state.staff||[],
+      sesiones:state.sessions||{},
+      horaInicial:state.horaInicial||{},
+      localizacionInicial:state.localizacionInicial||{},
+      tiposTarea:state.taskTypes||[],
+      materiales:state.materialTypes||[],
+      localizaciones:state.locations||[],
+      vehiculos:state.vehicles||[],
+      tareasCliente:(state.sessions?.CLIENTE||[])
+    });
+    payload.catalogos={
+      materiales:safeDeepClone(state.materialTypes||[]),
+      vehiculos:vehiclesPayload,
+      localizaciones:locationsPayload,
+      tiposTarea:safeDeepClone(state.taskTypes||[])
+    };
+    payload.detalleCadenas=tasks.map(task=>({
+      id:task.id,
+      nombre:task.actionName||labelForTask(task),
+      relacion:task.structureRelation||"milestone",
+      padre:task.structureParentId||null,
+      asignaciones:safeDeepClone(task.assignedStaffIds||[]),
+      inicioMin:toHHMMOrNull(task.startMin),
+      finMin:toHHMMOrNull(task.endMin),
+      duracionMin:ensureDurationValue(task),
+      ventana:{
+        limiteInferior:toHHMMOrNull(task.limitEarlyMin),
+        limiteSuperior:toHHMMOrNull(task.limitLateMin)
+      }
+    }));
+    payload.matrizViajes=travelMatrix;
+
+    return payload;
   };
 
   const safeStringifyForPopup = (value)=>{
@@ -4069,11 +4130,23 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
     const staffByName=new Map(staffList.map(st=>[(st.nombre||st.id||"").toLowerCase(), st]));
     const taskById=new Map(tasks.map(task=>[task.id, task]));
     const taskByName=new Map(tasks.map(task=>[(labelForTask(task)||"").toLowerCase(), task]));
+    const locationList=(state.locations||[]);
+    const locationById=new Map(locationList.map(loc=>[String(loc.id), loc]));
+    const locationByName=new Map(locationList.map(loc=>[(loc.nombre||loc.id||"").toLowerCase(), loc]));
+    const resolveLocationIdFromHint = (hint)=>{
+      if(hint==null) return null;
+      const text=String(hint).trim();
+      if(!text) return null;
+      if(locationById.has(text)) return locationById.get(text).id;
+      const lower=text.toLowerCase();
+      if(locationByName.has(lower)) return locationByName.get(lower).id;
+      return text;
+    };
+
     const schedules=Array.isArray(result?.staff)?result.staff:Array.isArray(result?.schedules)?result.schedules:[];
     const sessionsByStaff={};
     const warningsByStaff={};
-    const globalWarnings=new Set();
-    const scheduledTaskIds=new Set();
+    const globalWarnings=new Set(Array.isArray(result?.warnings)?result.warnings.map(msg=>String(msg)):[]);
 
     schedules.forEach(entry=>{
       let staffId=entry?.staffId || entry?.id || entry?.personId || null;
@@ -4090,90 +4163,87 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
         globalWarnings.add(`La IA devolvió un miembro del staff no reconocido: ${label}.`);
         return;
       }
-      const sessions=[];
+
       const staffWarnings=new Set(Array.isArray(entry?.warnings)?entry.warnings.map(msg=>String(msg)):[]);
       const rawSessions=Array.isArray(entry?.sessions)?entry.sessions:[];
+      const sessions=[];
+
       rawSessions.forEach((session, idx)=>{
-        const taskIdRaw=session?.taskId || session?.id || session?.actionId || null;
-        let task=taskIdRaw ? taskById.get(taskIdRaw) : null;
-        if(!task && session?.taskName){
-          const taskNameKey=String(session.taskName).trim().toLowerCase();
-          if(taskByName.has(taskNameKey)) task=taskByName.get(taskNameKey);
-        }
-        const actionTypeHint = normalizeActionTypeValue(pickFirstString(session,["actionType","tipoAccion","tipo","categoria"]));
+        const actionTypeHint=normalizeActionTypeValue(pickFirstString(session,["actionType","tipoAccion","tipo","categoria"]));
         const start=scheduleAiTimeToMinutes(session?.start ?? session?.startTime ?? session?.inicio ?? session?.horaInicio);
         let end=scheduleAiTimeToMinutes(session?.end ?? session?.endTime ?? session?.fin ?? session?.horaFin);
         const duration=Number(session?.durationMin ?? session?.duration ?? session?.duracionMin ?? session?.duracion);
         if(start!=null && (end==null || end<=start) && Number.isFinite(duration) && duration>0){
           end=normalizeMinute(start + duration);
         }
+        if(start==null || end==null || end<=start){
+          staffWarnings.add(`Sesión ${idx+1}: horario incompleto devuelto por la IA.`);
+          return;
+        }
+
+        const comentario=pickFirstString(session,["comment","comentario","notes"]);
+        const locationHint=pickFirstString(session,["locationId","localizacionId","location","localizacion"]);
+        const originHint=pickFirstString(session,["originId","origenId","origin","origen"]);
+        const destinationHint=pickFirstString(session,["destinationId","destinoId","destination","destino"]);
+        const resolvedLocation=resolveLocationIdFromHint(locationHint);
+        const resolvedOrigin=resolveLocationIdFromHint(originHint);
+        const resolvedDestination=resolveLocationIdFromHint(destinationHint);
+
+        const taskIdRaw=session?.taskId || session?.id || session?.actionId || null;
+        let task=taskIdRaw ? taskById.get(taskIdRaw) : null;
+        const nameHint=pickFirstString(session,["taskName","actionName","nombre"]);
+        if(!task && nameHint){
+          const key=nameHint.trim().toLowerCase();
+          if(key && taskByName.has(key)) task=taskByName.get(key);
+        }
+
+        if(!task && actionTypeHint===ACTION_TYPE_TRANSPORT){
+          const vehicleId=resolveVehicleId(session);
+          const actionName=nameHint || "Transporte";
+          const synthetic=makeSyntheticTransportSession({
+            start,
+            end,
+            originId:resolvedOrigin||null,
+            destinationId:resolvedDestination||resolvedLocation||null,
+            vehicleId,
+            comentario,
+            actionName
+          });
+          sessions.push(synthetic);
+          return;
+        }
+
         if(!task){
-          if(actionTypeHint===ACTION_TYPE_TRANSPORT){
-            if(start==null || end==null || end<=start){
-              staffWarnings.add(`Sesión ${idx+1}: transporte sin horario válido.`);
-              return;
-            }
-            const originId=pickFirstString(session,["originId","origenId","origin","origen"]);
-            const destinationId=pickFirstString(session,["destinationId","destinoId","destination","destino","locationId","localizacionId"]);
-            if(originId && destinationId && originId===destinationId){
-              staffWarnings.add(`Sesión ${idx+1}: transporte omitido (origen y destino iguales).`);
-              return;
-            }
-            const vehicleId=resolveVehicleId(session);
-            const actionName=pickFirstString(session,["actionName","taskName","nombre"]) || "Transporte";
-            const comentario=pickFirstString(session,["comment","comentario","notes"]);
-            sessions.push(makeSyntheticTransportSession({
-              start,
-              end,
-              originId:originId||null,
-              destinationId:destinationId||null,
-              vehicleId,
-              comentario,
-              actionName
-            }));
-            return;
-          }
-          staffWarnings.add(`Sesión ${idx+1}: tarea desconocida (${taskIdRaw || session?.taskName || "sin identificador"}).`);
+          staffWarnings.add(`Sesión ${idx+1}: tarea desconocida (${taskIdRaw || nameHint || "sin identificador"}).`);
           return;
         }
-        if((start==null || end==null || end<=start)){
-          staffWarnings.add(`${labelForTask(task)}: horario incompleto devuelto por la IA.`);
-          return;
-        }
+
         ensureTaskAssignment(task, staffId);
         const sessionEntry=makeTaskSession(task, start, end);
+        sessionEntry.startMin=start;
+        sessionEntry.endMin=end;
+        if(comentario) sessionEntry.comentario=comentario;
+        if(resolvedLocation) sessionEntry.locationId=resolvedLocation;
+        else if(actionTypeHint!==ACTION_TYPE_TRANSPORT && resolvedDestination) sessionEntry.locationId=resolvedDestination;
+
         if(actionTypeHint===ACTION_TYPE_TRANSPORT){
           sessionEntry.actionType=ACTION_TYPE_TRANSPORT;
-          const originId=pickFirstString(session,["originId","origenId","origin","origen"]);
-          const destinationId=pickFirstString(session,["destinationId","destinoId","destination","destino","locationId","localizacionId"]);
-          if(originId) sessionEntry.originId = originId;
-          if(destinationId) sessionEntry.destinationId = destinationId;
+          if(resolvedOrigin) sessionEntry.originId=resolvedOrigin;
+          if(resolvedDestination) sessionEntry.destinationId=resolvedDestination;
           const vehicleId=resolveVehicleId(session);
-          if(vehicleId) sessionEntry.vehicleId = vehicleId;
-          if(sessionEntry.originId && sessionEntry.destinationId && sessionEntry.originId===sessionEntry.destinationId){
-            staffWarnings.add(`${labelForTask(task)}: transporte omitido (origen y destino iguales).`);
-            return;
-          }
+          if(vehicleId) sessionEntry.vehicleId=vehicleId;
         }
-        const enforced=enforceSessionConstraintsForTask(task, sessionEntry, staffWarnings);
-        if(!enforced){
-          return;
-        }
-        scheduledTaskIds.add(task.id);
+
         sessions.push(sessionEntry);
       });
-      const normalizationResult=insertMissingTransportsForStaff(staffId, sessions, staffWarnings);
-      const normalizedSessions=normalizationResult.sessions;
-      normalizationResult.skippedTaskIds.forEach(id=> scheduledTaskIds.delete(id));
-      if(!normalizedSessions.length && !staffWarnings.size){
-        staffWarnings.add("La IA no generó sesiones para este miembro del staff.");
-      }
-      sessionsByStaff[staffId]=normalizedSessions;
+
+      sessionsByStaff[staffId]=sessions.sort((a,b)=>{
+        const sa=Number.isFinite(Number(a?.startMin))?Number(a.startMin):Number.POSITIVE_INFINITY;
+        const sb=Number.isFinite(Number(b?.startMin))?Number(b.startMin):Number.POSITIVE_INFINITY;
+        return sa-sb;
+      });
       warningsByStaff[staffId]=staffWarnings;
     });
-
-    const validationResult=validateAndPruneSchedule(sessionsByStaff, warningsByStaff, scheduledTaskIds, taskById);
-    validationResult.removedTaskIds.forEach(id=> scheduledTaskIds.delete(id));
 
     staffList.forEach(st=>{
       if(!sessionsByStaff[st.id]) sessionsByStaff[st.id]=[];
@@ -4202,19 +4272,9 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
       }
       metricsByStaff[st.id]=computeMetricsFromSessions(sessions);
       const warnSet=warningsByStaff[st.id] instanceof Set ? warningsByStaff[st.id] : new Set(warningsByStaff[st.id]||[]);
-      const warnArray=[...warnSet];
+      const warnArray=[...warnSet].map(msg=>String(msg));
       warningsByStaffOutput[st.id]=warnArray;
       warnArray.forEach(msg=>globalWarnings.add(String(msg)));
-    });
-
-    const extraWarnings=Array.isArray(result?.warnings)?result.warnings:[];
-    extraWarnings.forEach(msg=>globalWarnings.add(String(msg)));
-
-    tasks.forEach(task=>{
-      if(task.structureRelation==="milestone") return;
-      if(!task.assignedStaffIds || !task.assignedStaffIds.length) return;
-      if(scheduledTaskIds.has(task.id)) return;
-      globalWarnings.add(`${labelForTask(task)}: la IA no devolvió horario para esta tarea.`);
     });
 
     state.scheduleMeta.generatedAt=new Date().toISOString();
@@ -4223,6 +4283,7 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
     state.scheduleMeta.metricsByStaff=metricsByStaff;
     state.scheduleMeta.globalMetrics=computeGlobalMetrics(metricsByStaff, staffList);
     state.scheduleMeta.globalWarnings=[...globalWarnings];
+    state.scheduleMeta.lastResponse=result;
 
     touch();
     if(typeof window.renderClient === "function") window.renderClient();
@@ -4238,6 +4299,8 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
     const staffList=(state.staff||[]);
     if(!staffList.length) throw new Error("Añade miembros del staff para generar los horarios.");
     const payload=collectScheduleAiPayload();
+    state.scheduleMeta.lastPayload = payload;
+    touch();
     showCopyablePopup("Mensaje enviado a ChatGPT", payload);
     const response=await requestScheduleFromAI(payload);
     const parsed=parseAiScheduleResponse(response);
