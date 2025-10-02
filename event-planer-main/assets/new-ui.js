@@ -87,6 +87,10 @@
     task.assignedStaffId = undefined;
     if(typeof task.locationApplies === "undefined") task.locationApplies = true;
     if(typeof task.locationId === "undefined") task.locationId = null;
+    if(task.locationId==null && task.localizacion && typeof task.localizacion === "object"){
+      const locId = task.localizacion.id || task.localizacion.locationId || null;
+      if(locId) task.locationId = locId;
+    }
     if(typeof task.vehicleId === "undefined") task.vehicleId = null;
     if(typeof task.comentario !== "string") task.comentario = task.comentario ? String(task.comentario) : "";
     task.startMin = toNumberOrNull(task.startMin);
@@ -3775,9 +3779,10 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
         const st=staffById.get(id);
         return st?{id:st.id,nombre:st.nombre||st.id}:{id,nombre:id};
       });
-      const location = task.locationId ? (locationById.get(task.locationId) || {
-        id:task.locationId,
-        nombre:locationNameById(task.locationId)||task.locationId,
+      const locationId = task.locationId ?? (task.localizacion && typeof task.localizacion === "object" ? (task.localizacion.id || task.localizacion.locationId || null) : null);
+      const location = locationId ? (locationById.get(locationId) || {
+        id:locationId,
+        nombre:locationNameById(locationId)||locationId,
         lat:null,
         lng:null
       }) : null;
@@ -3805,8 +3810,8 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
         asignadoA:assigned,
         jerarquia:breadcrumb,
         profundidad:depth,
-        requiresStaff:requiresPresence,
-        requiereStaff:requiresPresence,
+        requiresStaff:requiresPresence ? 1 : 0,
+        requiereStaff:requiresPresence ? 1 : 0,
         bloqueada:!!task.locked,
         ventana:{
           original:{
@@ -4339,40 +4344,24 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
     const info=ensureSessionTiming(session);
     let start=info.start;
     let end=info.end;
-    if(start==null && end==null){
+    if(start==null || end==null){
       if(staffWarnings) staffWarnings.add(`${label}: la IA no proporcionó horario completo.`);
       return null;
     }
-    if(start!=null && end==null){
+    const span=end-start;
+    if(span!==duration){
+      if(staffWarnings) staffWarnings.add(`${label}: duración ajustada a ${duration} minutos según catálogo.`);
       end=normalizeMinute(start + duration);
-    }else if(end!=null && start==null){
-      start=normalizeMinute(end - duration);
-    }
-    if(start!=null && end!=null){
-      const span=end-start;
-      if(span!==duration){
-        end=normalizeMinute(start + duration);
-        session.endMin=end;
-        session.durationMin=duration;
-        if(staffWarnings) staffWarnings.add(`${label}: duración ajustada a ${duration} minutos según catálogo.`);
-      }
     }
     const explicitStart=taskHasExplicitStart(task) ? normalizeMinute(Number(task.startMin)) : null;
     const explicitEnd=taskHasExplicitEnd(task) ? normalizeMinute(Number(task.endMin)) : null;
-    if(explicitStart!=null){
-      if(start!=null && start!==explicitStart && staffWarnings){
-        staffWarnings.add(`${label}: inicio reajustado a ${toHHMM(explicitStart)} por restricción fija.`);
-      }
+    if(explicitStart!=null && start!==explicitStart){
+      if(staffWarnings) staffWarnings.add(`${label}: inicio forzado a ${toHHMM(explicitStart)} por restricción fija.`);
       start=explicitStart;
-      if(explicitEnd!=null){
-        end=explicitEnd;
-      }else{
-        end=normalizeMinute(start + duration);
-      }
-    }else if(explicitEnd!=null){
-      if(end!=null && end!==explicitEnd && staffWarnings){
-        staffWarnings.add(`${label}: fin reajustado a ${toHHMM(explicitEnd)} por restricción fija.`);
-      }
+      end=normalizeMinute(start + duration);
+    }
+    if(explicitEnd!=null && end!==explicitEnd){
+      if(staffWarnings) staffWarnings.add(`${label}: fin forzado a ${toHHMM(explicitEnd)} por restricción fija.`);
       end=explicitEnd;
       start=normalizeMinute(end - duration);
     }
@@ -4383,47 +4372,27 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
     const endMin=window.endMin ?? null;
     const endMax=window.endMax ?? null;
 
-    if(start!=null){
-      if(startLower!=null && start<startLower){
-        start=normalizeMinute(startLower);
-        end=normalizeMinute(start + duration);
-        if(staffWarnings) staffWarnings.add(`${label}: inicio ajustado al mínimo permitido (${toHHMM(startLower)}).`);
-      }
-      if(startUpper!=null && start>startUpper){
-        const candidate=normalizeMinute(startUpper);
-        const candidateEnd=normalizeMinute(candidate + duration);
-        if(endMax!=null && candidateEnd>endMax){
-          if(staffWarnings) staffWarnings.add(`${label}: no cabe dentro de la ventana asignada.`);
-        }else{
-          start=candidate;
-          end=candidateEnd;
-          if(staffWarnings) staffWarnings.add(`${label}: inicio limitado al máximo (${toHHMM(startUpper)}).`);
-        }
-      }
+    if(startLower!=null && start<startLower){
+      if(staffWarnings) staffWarnings.add(`${label}: inicio ${toHHMM(start)} fuera de la ventana mínima (${toHHMM(startLower)}).`);
+      return null;
+    }
+    if(startUpper!=null && start>startUpper){
+      if(staffWarnings) staffWarnings.add(`${label}: inicio ${toHHMM(start)} supera el máximo permitido (${toHHMM(startUpper)}).`);
+      return null;
+    }
+    if(endMin!=null && end<endMin){
+      if(staffWarnings) staffWarnings.add(`${label}: fin ${toHHMM(end)} antes del mínimo permitido (${toHHMM(endMin)}).`);
+      return null;
+    }
+    if(endMax!=null && end>endMax){
+      if(staffWarnings) staffWarnings.add(`${label}: fin ${toHHMM(end)} excede el máximo permitido (${toHHMM(endMax)}).`);
+      return null;
     }
 
-    if(end!=null){
-      if(endMin!=null && end<endMin){
-        end=normalizeMinute(endMin);
-        start=normalizeMinute(end - duration);
-        if(staffWarnings) staffWarnings.add(`${label}: fin ajustado al mínimo permitido (${toHHMM(endMin)}).`);
-      }
-      if(endMax!=null && end>endMax){
-        const latestStart=normalizeMinute(endMax - duration);
-        if(startLower!=null && latestStart<startLower){
-          if(staffWarnings) staffWarnings.add(`${label}: excede la ventana disponible; requiere ${duration} minutos.`);
-        }else{
-          end=normalizeMinute(endMax);
-          start=normalizeMinute(end - duration);
-          if(staffWarnings) staffWarnings.add(`${label}: fin limitado al máximo (${toHHMM(endMax)}).`);
-        }
-      }
-    }
-
-    session.startMin=start;
-    session.endMin=end;
+    session.startMin=normalizeMinute(start);
+    session.endMin=normalizeMinute(end);
     session.durationMin=duration;
-    return {start,end,duration};
+    return session;
   };
 
   const getTaskForSession = (session)=>{
