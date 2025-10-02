@@ -3505,58 +3505,120 @@
     return { start, end };
   };
 
+  const computeRelationSubtreeDuration = (task, relation)=>{
+    if(!task) return 0;
+    const own=ensureDurationValue(task);
+    const childrenTotal=getTaskChildren(task).reduce((acc, child)=>{
+      if(child?.structureRelation!==relation) return acc;
+      return acc + computeRelationSubtreeDuration(child, relation);
+    }, 0);
+    return own + childrenTotal;
+  };
+
+  const sumRelationDescendantsDuration = (task, relation)=>{
+    if(!task) return 0;
+    return getTaskChildren(task).reduce((acc, child)=>{
+      if(child?.structureRelation!==relation) return acc;
+      return acc + computeRelationSubtreeDuration(child, relation);
+    }, 0);
+  };
+
+  const sumRelationAncestorDurations = (task, relation)=>{
+    let total=0;
+    let cursor=task;
+    while(cursor?.structureParentId){
+      const parent=getTaskById(cursor.structureParentId);
+      if(!parent) break;
+      if(parent.structureRelation===relation){
+        total += ensureDurationValue(parent);
+        cursor = parent;
+        continue;
+      }
+      break;
+    }
+    return total;
+  };
+
   const deriveTaskWindow = (task)=>{
     const relation=(task?.structureRelation)||"milestone";
-    if(relation==="milestone") return { lower:null, upper:null };
-    const breadcrumb=getBreadcrumb(task);
-    const root=breadcrumb[0]||null;
-    const { start:rootStart, end:rootEnd } = getRootStartAndEnd(root);
-    const idx=breadcrumb.findIndex(step=>step.id===task?.id);
-    if(idx<0) return { lower:null, upper:null };
     const duration=ensureDurationValue(task);
-    const derived={ lower:null, upper:null };
+    const defaults={ startMin:null, startMax:null, endMin:null, endMax:null };
+    if(relation==="milestone") return { ...defaults, lower:null, upper:null };
+    const root=rootTaskFor(task);
+    const { start:rootStart, end:rootEnd } = getRootStartAndEnd(root);
     if(relation==="pre"){
-      if(rootStart!=null){
-        const chain=breadcrumb.slice(1, idx+1);
-        const used=sumDurations(chain);
-        let latest = normalizeMinute(rootStart - used);
-        if(latest!=null){
-          const minUpper = DEFAULT_DAY_LOWER_MIN + duration;
-          if(latest < minUpper) latest = normalizeMinute(minUpper);
-          if(rootStart!=null && latest>rootStart) latest = rootStart;
-        }
-        derived.upper = latest;
-      }
-      derived.lower = DEFAULT_DAY_LOWER_MIN;
-    }else if(relation==="post"){
+      const ancestorsDuration=sumRelationAncestorDurations(task, "pre");
+      const descendantsDuration=sumRelationDescendantsDuration(task, "pre");
+      const latestEndBase=(rootStart!=null) ? rootStart - ancestorsDuration : DEFAULT_DAY_UPPER_MIN;
+      const latestEnd=normalizeMinute(Math.min(DEFAULT_DAY_UPPER_MIN, latestEndBase));
+      let earliestStart = latestEnd!=null ? latestEnd - (duration + descendantsDuration) : DEFAULT_DAY_LOWER_MIN;
+      if(earliestStart!=null) earliestStart = normalizeMinute(Math.max(DEFAULT_DAY_LOWER_MIN, earliestStart));
+      const startMin = earliestStart;
+      const endMin = startMin!=null ? normalizeMinute(startMin + duration) : null;
+      let startMax = latestEnd!=null ? normalizeMinute(Math.max(startMin ?? DEFAULT_DAY_LOWER_MIN, latestEnd - duration)) : startMin;
+      if(startMax!=null && startMin!=null && startMax < startMin) startMax = startMin;
+      const endMax = latestEnd!=null ? normalizeMinute(Math.max(endMin ?? latestEnd, latestEnd)) : endMin;
+      return {
+        lower:startMin,
+        upper:startMax,
+        startMin,
+        startMax,
+        endMin,
+        endMax
+      };
+    }
+    if(relation==="post"){
+      const ancestorsDuration=sumRelationAncestorDurations(task, "post");
+      const descendantsDuration=sumRelationDescendantsDuration(task, "post");
+      const earliestStartBase=(rootEnd!=null) ? rootEnd + ancestorsDuration : DEFAULT_DAY_LOWER_MIN;
+      const startMin=normalizeMinute(Math.max(DEFAULT_DAY_LOWER_MIN, earliestStartBase));
+      const endMin=startMin!=null ? normalizeMinute(startMin + duration) : null;
+      const latestEndBase=(rootEnd!=null) ? rootEnd + ancestorsDuration + duration + descendantsDuration : DEFAULT_DAY_UPPER_MIN;
+      let endMax=normalizeMinute(Math.min(DEFAULT_DAY_UPPER_MIN, latestEndBase));
+      if(endMin!=null && endMax!=null && endMax < endMin) endMax = endMin;
+      let startMax=endMax!=null ? normalizeMinute(Math.max(startMin ?? DEFAULT_DAY_LOWER_MIN, endMax - duration - descendantsDuration)) : startMin;
+      if(startMax!=null && startMin!=null && startMax < startMin) startMax = startMin;
+      return {
+        lower:startMin,
+        upper:startMax,
+        startMin,
+        startMax,
+        endMin,
+        endMax
+      };
+    }
+    if(relation==="parallel"){
+      const startMin = rootStart!=null ? normalizeMinute(rootStart) : DEFAULT_DAY_LOWER_MIN;
+      let endMax;
       if(rootEnd!=null){
-        const preceding=breadcrumb.slice(1, idx);
-        let earliest = normalizeMinute(rootEnd + sumDurations(preceding));
-        if(earliest!=null && earliest > DEFAULT_DAY_UPPER_MIN - duration){
-          earliest = normalizeMinute(Math.max(0, DEFAULT_DAY_UPPER_MIN - duration));
-        }
-        derived.lower = earliest;
-      }
-      derived.upper = DEFAULT_DAY_UPPER_MIN;
-    }else if(relation==="parallel"){
-      if(rootStart!=null) derived.lower = rootStart;
-      if(rootEnd!=null){
-        derived.upper = rootEnd;
+        endMax = normalizeMinute(rootEnd);
       }else if(rootStart!=null){
-        derived.upper = normalizeMinute(rootStart + ensureDurationValue(root));
+        endMax = normalizeMinute(rootStart + ensureDurationValue(root));
       }else{
-        derived.upper = DEFAULT_DAY_UPPER_MIN;
+        endMax = DEFAULT_DAY_UPPER_MIN;
       }
+      if(endMax!=null && endMax < startMin + duration){
+        endMax = normalizeMinute(Math.max(startMin + duration, endMax));
+      }
+      const startMax = endMax!=null ? normalizeMinute(Math.max(startMin, endMax - duration)) : startMin;
+      const endMin = startMin!=null ? normalizeMinute(startMin + duration) : null;
+      return {
+        lower:startMin,
+        upper:startMax,
+        startMin,
+        startMax,
+        endMin,
+        endMax
+      };
     }
-    if(derived.lower!=null && derived.upper!=null){
-      if(derived.upper < derived.lower){
-        derived.lower = normalizeMinute(Math.max(0, derived.upper - duration));
-      }
-      if(derived.upper!=null && derived.lower!=null && derived.upper - derived.lower < duration){
-        derived.lower = normalizeMinute(Math.max(0, derived.upper - duration));
-      }
-    }
-    return derived;
+    return {
+      lower:null,
+      upper:null,
+      startMin:null,
+      startMax:null,
+      endMin:null,
+      endMax:null
+    };
   };
 
   const toHHMMOrNull = (value)=>{
@@ -3702,8 +3764,24 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
       const derivedWindow=deriveTaskWindow(task);
       const hasLower = !!(task.limitEarlyMinEnabled && Number.isFinite(task.limitEarlyMin));
       const hasUpper = !!(task.limitLateMinEnabled && Number.isFinite(task.limitLateMin));
-      const effectiveLower = hasLower ? normalizeMinute(Number(task.limitEarlyMin)) : derivedWindow.lower;
-      const effectiveUpper = hasUpper ? normalizeMinute(Number(task.limitLateMin)) : derivedWindow.upper;
+      const manualStartMin = hasLower ? normalizeMinute(Number(task.limitEarlyMin)) : null;
+      const manualEndMax = hasUpper ? normalizeMinute(Number(task.limitLateMin)) : null;
+      let effectiveStartMin = manualStartMin ?? derivedWindow.startMin ?? derivedWindow.lower ?? null;
+      let effectiveEndMax = manualEndMax ?? derivedWindow.endMax ?? null;
+      let effectiveStartMax = derivedWindow.startMax ?? derivedWindow.upper ?? null;
+      let effectiveEndMin = derivedWindow.endMin ?? null;
+      if(effectiveStartMin!=null && effectiveEndMin==null){
+        effectiveEndMin = normalizeMinute(effectiveStartMin + ensureDurationValue(task));
+      }
+      if(effectiveEndMax!=null && effectiveStartMax==null){
+        effectiveStartMax = normalizeMinute(effectiveEndMax - ensureDurationValue(task));
+      }
+      if(effectiveStartMin!=null && effectiveStartMax!=null && effectiveStartMax < effectiveStartMin){
+        effectiveStartMax = effectiveStartMin;
+      }
+      if(effectiveEndMin!=null && effectiveEndMax!=null && effectiveEndMax < effectiveEndMin){
+        effectiveEndMax = effectiveEndMin;
+      }
       const assigned=(task.assignedStaffIds||[]).map(id=>{
         const st=staffById.get(id);
         return st?{id:st.id,nombre:st.nombre||st.id}:{id,nombre:id};
@@ -3724,8 +3802,8 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
         duracionMin:ensureDurationValue(task),
         inicioFijo:task.startMin!=null?toHHMM(task.startMin):null,
         finFijo:task.endMin!=null?toHHMM(task.endMin):null,
-        limiteInferior:effectiveLower!=null?toHHMM(effectiveLower):null,
-        limiteSuperior:effectiveUpper!=null?toHHMM(effectiveUpper):null,
+        limiteInferior:effectiveStartMin!=null?toHHMM(effectiveStartMin):null,
+        limiteSuperior:effectiveEndMax!=null?toHHMM(effectiveEndMax):null,
         dependeDe:task.structureParentId||null,
         raiz:rootTaskFor(task)?.id||null,
         raizNombre:root? (root.actionName||root.nombre||root.id) : null,
@@ -3736,14 +3814,20 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
         bloqueada:!!task.locked,
         ventana:{
           original:{
-            inferior:hasLower?toHHMM(task.limitEarlyMin):null,
-            superior:hasUpper?toHHMM(task.limitLateMin):null
+            inicioMin:manualStartMin!=null?toHHMM(manualStartMin):null,
+            finMax:manualEndMax!=null?toHHMM(manualEndMax):null
           },
           derivada:{
-            inferior:derivedWindow.lower!=null?toHHMM(derivedWindow.lower):null,
-            superior:derivedWindow.upper!=null?toHHMM(derivedWindow.upper):null
+            inicioMin:derivedWindow.startMin!=null?toHHMM(derivedWindow.startMin):null,
+            inicioMax:derivedWindow.startMax!=null?toHHMM(derivedWindow.startMax):null,
+            finMin:derivedWindow.endMin!=null?toHHMM(derivedWindow.endMin):null,
+            finMax:derivedWindow.endMax!=null?toHHMM(derivedWindow.endMax):null
           }
         },
+        ventanaInicioMin:effectiveStartMin!=null?toHHMM(effectiveStartMin):null,
+        ventanaInicioMax:effectiveStartMax!=null?toHHMM(effectiveStartMax):null,
+        ventanaFinMin:effectiveEndMin!=null?toHHMM(effectiveEndMin):null,
+        ventanaFinMax:effectiveEndMax!=null?toHHMM(effectiveEndMax):null,
         notas:task.comentario||""
       };
     });
@@ -4036,10 +4120,11 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
         }
         sessions.push(sessionEntry);
       });
-      if(!sessions.length && !staffWarnings.size){
+      const normalizedSessions=insertMissingTransportsForStaff(staffId, sessions, staffWarnings);
+      if(!normalizedSessions.length && !staffWarnings.size){
         staffWarnings.add("La IA no generó sesiones para este miembro del staff.");
       }
-      sessionsByStaff[staffId]=sessions;
+      sessionsByStaff[staffId]=normalizedSessions;
       warningsByStaff[staffId]=[...staffWarnings];
     });
 
@@ -4191,6 +4276,111 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
       }
     }
     return session;
+  };
+
+  const findLocationById = (id)=> (state.locations||[]).find(loc=>loc.id===id) || null;
+
+  const estimateTravelInfo = (originId, destinationId)=>{
+    if(!originId || !destinationId || originId===destinationId) return { duration:0, vehicleId:defaultVehicleId() };
+    const origin=findLocationById(originId);
+    const destination=findLocationById(destinationId);
+    if(!origin || !destination) return null;
+    const defaultVehicle=defaultVehicleId();
+    const vehicles=state.vehicles||[];
+    const vehicle=vehicles.find(v=>v.id===defaultVehicle) || vehicles[0] || null;
+    const speed=toNumberOrNullStrict(vehicle?.speedKmph) ?? 4;
+    const distance=haversineDistanceKm(origin, destination);
+    const duration=estimateTravelMinutes(distance, speed);
+    if(duration==null) return null;
+    return { duration, vehicleId:(vehicle?.id||defaultVehicle||null) };
+  };
+
+  const buildTransportSessionBetween = (originId, destinationId, earliestStart, nextStart, staffWarnings)=>{
+    const originName=locationNameById(originId)||originId||"Origen";
+    const destinationName=locationNameById(destinationId)||destinationId||"Destino";
+    const travelInfo=estimateTravelInfo(originId, destinationId);
+    if(!travelInfo){
+      if(staffWarnings) staffWarnings.add(`Transporte ${originName} → ${destinationName}: no se pudo estimar la duración.`);
+      return null;
+    }
+    if(!Number.isFinite(travelInfo.duration) || travelInfo.duration<=0){
+      return null;
+    }
+    let end=nextStart!=null?normalizeMinute(nextStart):null;
+    if(end==null && earliestStart!=null){
+      end=normalizeMinute(earliestStart + travelInfo.duration);
+    }
+    if(end==null){
+      if(staffWarnings) staffWarnings.add(`Transporte ${originName} → ${destinationName}: no hay hueco definido para ubicar el trayecto.`);
+      return null;
+    }
+    let start=normalizeMinute(end - travelInfo.duration);
+    if(earliestStart!=null && start<earliestStart){
+      start=normalizeMinute(earliestStart);
+      end=normalizeMinute(start + travelInfo.duration);
+    }
+    if(start==null || end==null || end<=start){
+      if(staffWarnings) staffWarnings.add(`Transporte ${originName} → ${destinationName}: horario inválido al intentar insertarlo.`);
+      return null;
+    }
+    const session=makeSyntheticTransportSession({
+      start,
+      end,
+      originId,
+      destinationId,
+      vehicleId:travelInfo.vehicleId,
+      actionName:`Transporte ${originName} → ${destinationName}`
+    });
+    return session;
+  };
+
+  const getSessionDestination = (session)=>{
+    if(!session) return null;
+    const type=normalizeActionTypeValue(session.actionType);
+    if(type===ACTION_TYPE_TRANSPORT) return session.destinationId || session.locationId || null;
+    return session.locationId || null;
+  };
+
+  const getSessionOrigin = (session, fallback)=>{
+    if(!session) return fallback || null;
+    const type=normalizeActionTypeValue(session.actionType);
+    if(type===ACTION_TYPE_TRANSPORT) return session.originId || fallback || null;
+    return session.originId || session.locationId || fallback || null;
+  };
+
+  const insertMissingTransportsForStaff = (staffId, sessions, staffWarnings)=>{
+    const sorted=(sessions||[]).slice().sort((a,b)=>{
+      const sa=Number.isFinite(Number(a?.startMin))?Number(a.startMin):Number.POSITIVE_INFINITY;
+      const sb=Number.isFinite(Number(b?.startMin))?Number(b.startMin):Number.POSITIVE_INFINITY;
+      return sa-sb;
+    });
+    const augmented=[];
+    const initialLocation=state?.localizacionInicial?.[staffId] || null;
+    sorted.forEach((session)=>{
+      const currentOrigin=getSessionOrigin(session, augmented.length?getSessionDestination(augmented[augmented.length-1]):initialLocation);
+      if(!augmented.length && initialLocation && currentOrigin && initialLocation!==currentOrigin){
+        const transport=buildTransportSessionBetween(initialLocation, currentOrigin, null, session.startMin ?? null, staffWarnings);
+        if(transport) augmented.push(transport);
+      }else if(augmented.length){
+        const last=augmented[augmented.length-1];
+        const lastDestination=getSessionDestination(last) || null;
+        const lastType=normalizeActionTypeValue(last?.actionType);
+        const alreadyLinked=lastType===ACTION_TYPE_TRANSPORT && lastDestination && currentOrigin && lastDestination===currentOrigin;
+        if(!alreadyLinked && lastDestination && currentOrigin && lastDestination!==currentOrigin){
+          const earliestStart=Number.isFinite(last?.endMin)?Number(last.endMin):Number.isFinite(last?.startMin)?Number(last.startMin):null;
+          const transport=buildTransportSessionBetween(lastDestination, currentOrigin, earliestStart, session.startMin ?? null, staffWarnings);
+          if(transport){
+            if(session.startMin!=null && transport.endMin>session.startMin && staffWarnings){
+              const destinationName=locationNameById(currentOrigin)||currentOrigin||"Destino";
+              staffWarnings.add(`Transporte automático hacia ${destinationName} solapa con la siguiente tarea.`);
+            }
+            augmented.push(transport);
+          }
+        }
+      }
+      augmented.push(session);
+    });
+    return augmented;
   };
 
   const computeGlobalMetrics = (metricsByStaff, staffList)=>{
