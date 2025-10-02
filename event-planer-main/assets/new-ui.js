@@ -288,84 +288,50 @@
     if(!task || !task.structureParentId) return null;
     return getTaskById(task.structureParentId) || null;
   };
-  const inheritedPretaskLower = (task)=>{
-    const visited=new Set();
-    let current=task;
-    let depth=0;
-    while(current){
-      if(visited.has(current.id)) break;
-      visited.add(current.id);
-      const parent=getTaskParent(current);
-      if(!parent || parent.structureRelation !== "pre") break;
-      depth++;
-      if(depth>=2){
-        return null;
-      }
-      if(parent.limitEarlyMinEnabled && Number.isFinite(parent.limitEarlyMin)){
-        return roundToFive(clampToDay(parent.limitEarlyMin));
-      }
-      if(parent.limitLateMinEnabled && Number.isFinite(parent.limitLateMin)){
+  const inheritedPretaskLower = ()=> defaultPretaskLower();
+  const pretaskReferenceStart = (task, rootTask, stack=new Set())=>{
+    if(!task) return null;
+    const parent=getTaskParent(task);
+    if(parent && parent.structureRelation === "pre"){
+      if(Number.isFinite(parent.limitLateMin)){
         return roundToFive(clampToDay(parent.limitLateMin));
       }
-      if(Number.isFinite(parent.startMin)){
-        return roundToFive(clampToDay(parent.startMin));
+      if(stack.has(parent.id)) return null;
+      stack.add(parent.id);
+      const parentReference = pretaskReferenceStart(parent, rootTask, stack);
+      stack.delete(parent.id);
+      const parentDuration = Math.max(5, roundToFive(Number(parent.durationMin)||PRETASK_DEFAULT_DURATION));
+      if(parentReference==null){
+        return roundToFive(clampToDay(DAY_MAX_MIN));
       }
-      current=parent;
+      const parentUpper = roundToFive(clampToDay(Math.max(defaultPretaskLower(), parentReference - parentDuration)));
+      return parentUpper;
     }
-    return null;
-  };
-  const pretaskReferenceStart = (task, rootTask)=>{
-    const visited=new Set();
-    let current=task;
-    while(current){
-      if(visited.has(current.id)) break;
-      visited.add(current.id);
-      const parent=getTaskParent(current);
-      if(!parent) break;
-      if(parent.structureRelation === "pre"){
-        if(Number.isFinite(parent.limitLateMin)){
-          return roundToFive(clampToDay(parent.limitLateMin));
-        }
-        if(Number.isFinite(parent.startMin)){
-          return roundToFive(clampToDay(parent.startMin));
-        }
-        current=parent;
-        continue;
-      }
-      if(Number.isFinite(parent.startMin)){
-        return roundToFive(clampToDay(parent.startMin));
-      }
-      break;
+    if(Number.isFinite(rootTask?.startMin)){
+      return roundToFive(clampToDay(rootTask.startMin));
     }
-    return Number.isFinite(rootTask?.startMin)
-      ? roundToFive(clampToDay(rootTask.startMin))
-      : null;
+    return roundToFive(clampToDay(defaultTimelineStart()));
   };
   const defaultPretaskUpper = (referenceStart, lower, duration)=>{
-    if(Number.isFinite(referenceStart)){
-      const latest=roundToFive(clampToDay(referenceStart - duration));
-      return Math.max(lower, latest);
-    }
-    return Math.max(lower, roundToFive(clampToDay(lower + duration)));
+    const baseRef = Number.isFinite(referenceStart)
+      ? roundToFive(clampToDay(referenceStart))
+      : DAY_MAX_MIN;
+    const latest = roundToFive(clampToDay(baseRef - duration));
+    return Math.max(lower, latest);
   };
   const ensurePretaskBounds = (task, rootTask)=>{
     if(!task || task.structureRelation !== "pre") return;
     const duration = Math.max(5, roundToFive(Number(task.durationMin)||PRETASK_DEFAULT_DURATION));
     const rangeRequested = !!task.limitEarlyMinEnabled || !!task.limitLateMinEnabled;
-    const inheritedLower = inheritedPretaskLower(task);
-    const minLower = Math.max(PRETASK_MIN_LOWER_BOUND, inheritedLower!=null ? inheritedLower : defaultPretaskLower());
+    const minLower = defaultPretaskLower();
     const storedLowerRaw = Number.isFinite(task.limitEarlyMin)
       ? roundToFive(clampToDay(task.limitEarlyMin))
       : minLower;
     const referenceStart = pretaskReferenceStart(task, rootTask);
-    const computeLatestCap = (baseLower)=> Number.isFinite(referenceStart)
-      ? Math.max(baseLower, roundToFive(clampToDay(referenceStart - duration)))
-      : Math.max(baseLower, DAY_MAX_MIN);
     const defaultUpperFor = (baseLower)=> defaultPretaskUpper(referenceStart, baseLower, duration);
+    const latestCap = defaultUpperFor(minLower);
 
     let lower = rangeRequested ? storedLowerRaw : minLower;
-    lower = roundToFive(clampToDay(lower));
-    let latestCap = computeLatestCap(lower);
     let upper = Number.isFinite(task.limitLateMin)
       ? roundToFive(clampToDay(task.limitLateMin))
       : defaultUpperFor(lower);
@@ -373,31 +339,19 @@
 
     let rangeEnabled = rangeRequested;
     if(rangeEnabled){
-      const maxLower = Math.max(minLower, latestCap - duration);
-      if(lower > maxLower) lower = maxLower;
       if(lower < minLower) lower = minLower;
-      lower = roundToFive(clampToDay(lower));
-      latestCap = computeLatestCap(lower);
-      const minUpperAllowed = lower + duration;
-      const fallbackUpper = defaultUpperFor(lower);
-      const minUpper = Math.min(latestCap, lower + duration);
-      if(upper < minUpper) upper = Math.max(minUpperAllowed, fallbackUpper);
-      if(upper > latestCap) upper = latestCap;
-      if(upper < lower + duration){
-        // No hay espacio suficiente para respetar la duración dentro de la franja.
-        rangeEnabled = false;
-      }
-    }
-
-    if(!rangeEnabled){
+      if(lower > latestCap) lower = latestCap;
+      const maxUpper = defaultPretaskUpper(referenceStart, lower, duration);
+      if(upper < lower) upper = lower;
+      if(upper > maxUpper) upper = maxUpper;
+    }else{
       lower = minLower;
-      latestCap = computeLatestCap(lower);
       upper = defaultUpperFor(lower);
     }
 
-    latestCap = computeLatestCap(lower);
-    if(upper > latestCap) upper = latestCap;
-    upper = roundToFive(clampToDay(Math.max(lower, upper)));
+    if(upper < lower) upper = lower;
+    lower = roundToFive(clampToDay(lower));
+    upper = roundToFive(clampToDay(upper));
 
     task.durationMin = duration;
     task.limitEarlyMin = lower;
@@ -425,20 +379,13 @@
     return roundToFive(clampToDay(defaultTimelineStart()));
   };
 
-  const defaultParallelUpper = (rootTask, lower, duration)=>{
-    const minUpper = lower + duration;
-    const dayEnd = roundToFive(DAY_MAX_MIN);
-    return roundToFive(clampToDay(Math.max(dayEnd, minUpper)));
-  };
+  const defaultParallelUpper = ()=> roundToFive(DAY_MAX_MIN);
 
   const ensureParallelBounds = (task, rootTask)=>{
     if(!task || task.structureRelation !== "parallel") return;
     const duration = Math.max(5, roundToFive(Number(task.durationMin)||PRETASK_DEFAULT_DURATION));
-    const minLower = 0;
-    const maxLower = Math.max(0, DAY_MAX_MIN - duration);
     const baseLower = defaultParallelLower(rootTask);
-    let baseUpper = defaultParallelUpper(rootTask, baseLower, duration);
-    if(baseUpper < baseLower + duration) baseUpper = Math.min(DAY_MAX_MIN, baseLower + duration);
+    const baseUpper = Math.max(baseLower, defaultParallelUpper());
     const rangeRequested = !!task.limitEarlyMinEnabled || !!task.limitLateMinEnabled;
     let lower = rangeRequested && Number.isFinite(task.limitEarlyMin)
       ? roundToFive(clampToDay(task.limitEarlyMin))
@@ -446,9 +393,11 @@
     let upper = rangeRequested && Number.isFinite(task.limitLateMin)
       ? roundToFive(clampToDay(task.limitLateMin))
       : baseUpper;
-    lower = Math.max(minLower, Math.min(maxLower, lower));
-    const minUpper = Math.min(DAY_MAX_MIN, lower + duration);
-    const maxUpper = DAY_MAX_MIN;
+    const maxLower = baseUpper;
+    if(lower < baseLower) lower = baseLower;
+    if(lower > maxLower) lower = maxLower;
+    const maxUpper = defaultParallelUpper();
+    const minUpper = lower;
     let rangeEnabled = rangeRequested;
     if(rangeEnabled){
       if(upper < minUpper) upper = minUpper;
@@ -492,11 +441,11 @@
     const parent=getTaskParent(task);
     if(!parent || parent.structureRelation !== "post") return null;
     const parentRoot = rootTask || rootTaskFor(parent);
-    const parentLower = Number.isFinite(parent.limitEarlyMin)
+    const baseLower = Number.isFinite(parent.limitEarlyMin)
       ? roundToFive(clampToDay(parent.limitEarlyMin))
       : defaultPosttaskLower(parentRoot);
     const parentDuration = Math.max(5, roundToFive(Number(parent.durationMin)||PRETASK_DEFAULT_DURATION));
-    return roundToFive(clampToDay(parentLower + parentDuration));
+    return roundToFive(clampToDay(baseLower + parentDuration));
   };
 
   const effectivePosttaskLower = (task, rootTask)=>{
@@ -504,10 +453,9 @@
     return inheritedLower!=null ? inheritedLower : defaultPosttaskLower(rootTask);
   };
 
-  const defaultPosttaskUpper = (rootTask, lower, duration)=>{
+  const defaultPosttaskUpper = (lower)=>{
     const dayEnd = roundToFive(DAY_MAX_MIN);
-    const minUpper = lower + duration;
-    return roundToFive(clampToDay(Math.max(dayEnd, minUpper)));
+    return Math.max(lower, dayEnd);
   };
 
   const ensurePosttaskBounds = (task, rootTask)=>{
@@ -525,20 +473,20 @@
     if(lower > maxLower) lower = maxLower;
     let upper = Number.isFinite(task.limitLateMin)
       ? roundToFive(clampToDay(task.limitLateMin))
-      : defaultPosttaskUpper(rootTask, lower, duration);
-    if(!Number.isFinite(upper)) upper = defaultPosttaskUpper(rootTask, lower, duration);
+      : defaultPosttaskUpper(lower);
+    if(!Number.isFinite(upper)) upper = defaultPosttaskUpper(lower);
     let rangeEnabled = rangeRequested;
     if(rangeEnabled){
       const minUpperAllowed = lower + duration;
       if(upper < minUpperAllowed) upper = minUpperAllowed;
       if(upper > DAY_MAX_MIN) upper = DAY_MAX_MIN;
-      if(upper < lower + duration){
+      if(upper < lower){
         rangeEnabled = false;
       }
     }
     if(!rangeEnabled){
       lower = minLower;
-      upper = defaultPosttaskUpper(rootTask, lower, duration);
+      upper = defaultPosttaskUpper(lower);
     }
     if(lower > maxLower) lower = maxLower;
     if(upper > DAY_MAX_MIN) upper = DAY_MAX_MIN;
@@ -1632,12 +1580,12 @@
     }
     if(task.structureRelation === "post"){
       const lower = effectivePosttaskLower(task, root);
-      const upper = defaultPosttaskUpper(root, lower, duration);
+      const upper = defaultPosttaskUpper(lower);
       return { lower, upper };
     }
     if(task.structureRelation === "parallel"){
       const lower = defaultParallelLower(root);
-      const upper = defaultParallelUpper(root, lower, duration);
+      const upper = defaultParallelUpper();
       return { lower, upper };
     }
     return null;
@@ -2347,7 +2295,7 @@
     task.limitEarlyMinEnabled = false;
     task.limitLateMinEnabled = false;
     task.limitEarlyMin = lower;
-    task.limitLateMin = defaultPosttaskUpper(rootTask, lower, task.durationMin);
+    task.limitLateMin = defaultPosttaskUpper(lower);
     ensurePosttaskBounds(task, rootTask);
     touchTask(task);
     state.project.view.selectedTaskId = rootTask.id;
@@ -2441,7 +2389,7 @@
     const storedLower=Number.isFinite(task.limitEarlyMin) ? roundToFive(clampToDay(task.limitEarlyMin)) : minLower;
     const effectiveLower=rangeEnabled ? storedLower : minLower;
     const maxLowerForDuration=Math.max(minLower, DAY_MAX_MIN - duration);
-    const upperDefault=defaultPosttaskUpper(rootTask, effectiveLower, duration);
+    const upperDefault=defaultPosttaskUpper(effectiveLower);
     const storedUpper=Number.isFinite(task.limitLateMin) ? roundToFive(clampToDay(task.limitLateMin)) : upperDefault;
     const minUpperForInput=Math.max(effectiveLower + duration, minLower + duration);
 
@@ -2814,7 +2762,7 @@
     task.actionName = "";
     task.durationMin = PRETASK_DEFAULT_DURATION;
     const lower = defaultParallelLower(rootTask);
-    const upper = defaultParallelUpper(rootTask, lower, task.durationMin);
+    const upper = defaultParallelUpper();
     task.limitEarlyMinEnabled = true;
     task.limitLateMinEnabled = true;
     task.limitEarlyMin = lower;
@@ -2907,14 +2855,14 @@
 
     const defaultLower = defaultParallelLower(rootTask);
     const duration=Math.max(5, roundToFive(Number(task.durationMin)||PRETASK_DEFAULT_DURATION));
-    const defaultUpper = defaultParallelUpper(rootTask, defaultLower, duration);
+    const defaultUpper = defaultParallelUpper();
     const rangeEnabled=!!task.limitEarlyMinEnabled || !!task.limitLateMinEnabled;
     const storedLower=Number.isFinite(task.limitEarlyMin) ? roundToFive(clampToDay(task.limitEarlyMin)) : defaultLower;
     const storedUpper=Number.isFinite(task.limitLateMin) ? roundToFive(clampToDay(task.limitLateMin)) : defaultUpper;
     const effectiveLower=rangeEnabled ? storedLower : defaultLower;
     const effectiveUpper=rangeEnabled ? storedUpper : defaultUpper;
-    const minLower=0;
-    const maxLower=Math.max(0, DAY_MAX_MIN - duration);
+    const minLower=defaultLower;
+    const maxLower=defaultUpper;
     const minUpperForInput=Math.max(effectiveLower + duration, minLower + duration);
 
     const commitBoundsChange = (updater)=>{
