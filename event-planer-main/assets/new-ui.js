@@ -3786,7 +3786,7 @@
     return result;
   };
 
-  const SCHEDULE_AI_MODEL = "gpt-4o";
+  const SCHEDULE_AI_MODEL = "gpt-4o-mini";
   const SCHEDULE_AI_RESPONSE_FORMAT = { type: "json_object" };
   const SCHEDULE_AI_STORAGE_KEY = "eventplan.openai.key";
   const SCHEDULE_AI_SYSTEM_PROMPT = `Eres un planificador de eventos. Recibirás un JSON con la siguiente estructura:
@@ -4328,7 +4328,12 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
           if(vehicleId) sessionEntry.vehicleId=vehicleId;
         }
 
-        sessions.push(sessionEntry);
+        const enforcedSession=enforceSessionConstraintsForTask(task, sessionEntry, staffWarnings);
+        if(!enforcedSession){
+          return;
+        }
+
+        sessions.push(enforcedSession);
       });
 
       sessionsByStaff[staffId]=sessions.sort((a,b)=>{
