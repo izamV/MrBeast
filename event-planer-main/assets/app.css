@@ -118,12 +118,22 @@ table.matlist td.act{width:120px}
 .timeline-head{display:flex;justify-content:space-between;align-items:center;gap:.75rem}
 .timeline-head h3{margin:0;font-size:1rem;letter-spacing:.08em;text-transform:uppercase;color:#94a3b8}
 .timeline-track{display:flex;flex-wrap:wrap;gap:.6rem}
-.timeline-card{display:flex;flex-direction:column;gap:.2rem;align-items:flex-start;background:#0b1220;border:1px solid #1f2937;border-radius:.7rem;padding:.6rem .75rem;color:#e5e7eb;min-width:160px;cursor:pointer}
-.timeline-card .time{font-variant-numeric:tabular-nums;font-weight:600}
-.timeline-card .title{font-size:1rem;font-weight:600}
-.timeline-card .mini{color:#94a3b8}
+.timeline-card{display:flex;flex-direction:column;gap:.35rem;align-items:center;justify-content:center;text-align:center;background:linear-gradient(180deg,rgba(15,23,42,.65),rgba(15,23,42,.35));border:1px solid rgba(148,163,184,.25);border-radius:.8rem;padding:.75rem .9rem;color:#e5e7eb;min-width:180px;cursor:pointer;position:relative;box-shadow:0 10px 25px rgba(15,23,42,.28);transition:transform .2s ease,box-shadow .2s ease}
+.timeline-card::before{content:"";position:absolute;inset:2px;border-radius:.7rem;pointer-events:none;border:2px solid rgba(255,255,255,.08)}
+.timeline-card .time{font-variant-numeric:tabular-nums;font-weight:600;color:#cbd5f5}
+.timeline-card .title{font-size:1.05rem;font-weight:600;letter-spacing:.01em}
+.timeline-card .timeline-location{color:#94a3b8;font-size:.85rem}
+.timeline-card-head{width:100%;display:flex;justify-content:flex-end}
+.timeline-level{font-size:.7rem;font-weight:700;background:rgba(15,23,42,.6);border:1px solid rgba(148,163,184,.4);color:#e2e8f0;padding:.2rem .45rem;border-radius:999px;letter-spacing:.08em}
+.timeline-card.relation-milestone{background:linear-gradient(180deg,rgba(37,99,235,.2),rgba(15,23,42,.3));border-color:rgba(37,99,235,.45)}
+.timeline-card.relation-pre{background:linear-gradient(180deg,rgba(168,85,247,.22),rgba(15,23,42,.3));border-color:rgba(168,85,247,.45)}
+.timeline-card.relation-parallel{background:linear-gradient(180deg,rgba(20,184,166,.22),rgba(15,23,42,.3));border-color:rgba(20,184,166,.45)}
+.timeline-card.relation-post{background:linear-gradient(180deg,rgba(249,115,22,.22),rgba(15,23,42,.3));border-color:rgba(249,115,22,.45)}
+.timeline-card:hover{transform:translateY(-2px);box-shadow:0 14px 30px rgba(15,23,42,.35)}
 .timeline-card:hover{border-color:#3b82f6}
 .timeline-card.active{border-color:#3b82f6;box-shadow:0 0 0 1px #3b82f6}
+.timeline-card.readonly{cursor:default;transform:none;box-shadow:0 10px 25px rgba(15,23,42,.28)}
+.timeline-card.readonly:hover{transform:none}
 .timeline-empty{color:#94a3b8;font-size:.9rem}
 .timeline-empty-config{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:.75rem;background:#0b1220;border:1px solid #1f2937;border-radius:.75rem;padding:.9rem}
 .timeline-empty-config .field-row{margin:0}
@@ -366,7 +376,6 @@ table.matlist td.act{width:120px}
 .check{display:flex;align-items:center;gap:.35rem;font-size:.85rem;color:#cbd5f5}
 .task-actions{margin-top:auto}
 .task-actions .btn{width:100%}
-.timeline-card.readonly{cursor:default}
 .timeline-card.readonly:hover{border-color:#1f2937}
 
 /* === Horario completo (catálogo horarios) === */
@@ -385,6 +394,10 @@ table.matlist td.act{width:120px}
 .full-schedule-row{position:relative}
 .full-schedule-row-name{position:absolute;left:-180px;top:0;bottom:0;display:flex;align-items:flex-start;color:#cbd5f5;font-weight:600;padding-top:.3rem}
 .full-schedule-track{position:relative;border:1px solid #1f2937;border-radius:.75rem;background:#0b1220;min-height:56px}
+.full-schedule-marker{position:absolute;top:0;bottom:0;width:0;border-left:2px dashed rgba(148,163,184,.45);pointer-events:none}
+.full-schedule-marker::after{content:"";position:absolute;top:6px;bottom:6px;left:-1px;border-left:2px dashed rgba(148,163,184,.45);opacity:.8}
+.full-schedule-marker.is-start::after{border-color:rgba(16,185,129,.6)}
+.full-schedule-marker.is-end::after{border-color:rgba(244,114,182,.6)}
 .full-schedule-block{position:absolute;top:6px;min-height:30px;padding:.4rem .55rem;border-radius:.55rem;background:var(--block-color,#2563eb);color:#f8fafc;display:flex;flex-direction:column;gap:.2rem;box-shadow:0 10px 25px rgba(15,23,42,.28);border:1px solid rgba(255,255,255,.12);backdrop-filter:blur(1px)}
 .full-schedule-block .block-time{font-size:.75rem;font-variant-numeric:tabular-nums;font-weight:600}
 .full-schedule-block .block-label{font-size:.85rem;font-weight:600}

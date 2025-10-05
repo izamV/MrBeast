@@ -191,6 +191,19 @@
     return path;
   };
 
+  const relationLevelLabel = (task)=>{
+    if(!task) return "";
+    const relation=task.structureRelation || "milestone";
+    if(relation==="pre" || relation==="post"){
+      const trail=getBreadcrumb(task);
+      const depth=trail.filter(node=>node.structureRelation===relation).length;
+      const prefix=relation==="pre"?"PRE":"POST";
+      return `${prefix} ${Math.max(1, depth)}`;
+    }
+    if(relation==="parallel") return "CONC";
+    return "BASE";
+  };
+
   const hierarchyOrder = ()=>{
     const order=new Map();
     let i=0;
@@ -1078,21 +1091,31 @@
       const editorId = resolveTimelineEditorId(milestones, selectedId);
       milestones.forEach(task=>{
         const card=el("button","timeline-card");
+        const relation=task.structureRelation || "milestone";
+        const color=RELATION_COLOR[relation] || "#334155";
+        card.classList.add(`relation-${relation}`);
+        card.style.setProperty("--card-color", color);
         if(task.id===editorId) card.classList.add("active");
         const hasRange=(task.startMin!=null && task.endMin!=null);
         const time=hasRange ? `${toHHMM(task.startMin)} – ${toHHMM(task.endMin)}` : (task.startMin!=null ? toHHMM(task.startMin) : "Sin hora");
-        card.appendChild(el("div","time",time));
+        const header=el("div","timeline-card-head");
+        const badge=el("span","timeline-level", relationLevelLabel(task));
+        header.appendChild(badge);
+        card.appendChild(header);
         card.appendChild(el("div","title",labelForTask(task)));
+        card.appendChild(el("div","time",time));
         let subtitle="";
         if(task.actionType===ACTION_TYPE_TRANSPORT){
           const flow=transportFlowForTask(task);
           const originName=locationNameById(flow.origin) || "Sin origen";
           const destName=locationNameById(flow.destination) || "Sin destino";
           subtitle=`${originName} → ${destName}`;
+        }else if(task.locationApplies===false){
+          subtitle="No aplica";
         }else{
           subtitle=locationNameById(task.locationId) || "Sin localización";
         }
-        card.appendChild(el("div","mini",subtitle));
+        card.appendChild(el("div","timeline-location",subtitle));
         card.onclick=()=>{
           selectTask(task.id);
           state.project.view.timelineEditorId = task.id;
@@ -1128,21 +1151,31 @@
     }else{
       milestones.forEach(task=>{
         const card=el("div","timeline-card readonly");
+        const relation=task.structureRelation || "milestone";
+        const color=RELATION_COLOR[relation] || "#334155";
+        card.classList.add(`relation-${relation}`);
+        card.style.setProperty("--card-color", color);
         if(task.id===selectedId) card.classList.add("active");
         const hasRange=(task.startMin!=null && task.endMin!=null);
         const time=hasRange ? `${toHHMM(task.startMin)} – ${toHHMM(task.endMin)}` : (task.startMin!=null ? toHHMM(task.startMin) : "Sin hora");
-        card.appendChild(el("div","time",time));
+        const header=el("div","timeline-card-head");
+        const badge=el("span","timeline-level", relationLevelLabel(task));
+        header.appendChild(badge);
+        card.appendChild(header);
         card.appendChild(el("div","title",labelForTask(task)));
+        card.appendChild(el("div","time",time));
         let subtitle="";
         if(task.actionType===ACTION_TYPE_TRANSPORT){
           const flow=transportFlowForTask(task);
           const originName=locationNameById(flow.origin) || "Sin origen";
           const destName=locationNameById(flow.destination) || "Sin destino";
           subtitle=`${originName} → ${destName}`;
+        }else if(task.locationApplies===false){
+          subtitle="No aplica";
         }else{
           subtitle=locationNameById(task.locationId) || "Sin localización";
         }
-        card.appendChild(el("div","mini",subtitle));
+        card.appendChild(el("div","timeline-location",subtitle));
         list.appendChild(card);
       });
     }
@@ -4888,48 +4921,13 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
       const currentOrigin=getSessionOrigin(session, fallbackOrigin);
       const needsTransport = previousDestination && currentOrigin && previousDestination!==currentOrigin;
       if(needsTransport){
-        const vehicleHint=session.vehicleId || sessionTask?.vehicleId || null;
-        const travelInfo=estimateTravelInfo(previousDestination, currentOrigin, vehicleHint);
         const originName=locationNameById(previousDestination)||previousDestination||"Origen";
         const destName=locationNameById(currentOrigin)||currentOrigin||"Destino";
-        if(!travelInfo){
-          if(staffWarnings) staffWarnings.add(`Transporte ${originName} → ${destName}: no se pudo estimar la duración.`);
-          skipSession(sessionTask);
-          return;
+        if(staffWarnings){
+          staffWarnings.add(`${describeSession(session)}: necesitas crear un transporte ${originName} → ${destName} antes de programar esta tarea.`);
         }
-        if(travelInfo.duration>0){
-          const arrival=info.start;
-          if(arrival==null){
-            if(staffWarnings) staffWarnings.add(`${describeSession(session)}: falta hora de inicio para insertar transporte desde ${originName}.`);
-            skipSession(sessionTask);
-            return;
-          }
-          const earliestStart=availableEnd;
-          const transportStart=normalizeMinute(arrival - travelInfo.duration);
-          if(transportStart==null){
-            if(staffWarnings) staffWarnings.add(`${describeSession(session)}: transporte ${originName} → ${destName} con horario inválido.`);
-            skipSession(sessionTask);
-            return;
-          }
-          if(earliestStart!=null && transportStart<earliestStart){
-            const adjusted=ensurePreviousFinishesBy(transportStart);
-            if(!adjusted){
-              if(staffWarnings) staffWarnings.add(`${describeSession(session)}: no hay hueco para el transporte ${originName} → ${destName}.`);
-              skipSession(sessionTask);
-              return;
-            }
-          }
-          const transportSession=buildTransportSessionBetween(previousDestination, currentOrigin, arrival, staffWarnings, travelInfo);
-          if(!transportSession){
-            skipSession(sessionTask);
-            return;
-          }
-          transportSession.__sequenceFloor = availableEnd;
-          augmented.push(transportSession);
-          const transportEnd=minuteValueOrNull(transportSession.endMin);
-          if(transportEnd!=null) availableEnd=transportEnd;
-          previousDestination=getSessionDestination(transportSession) || currentOrigin;
-        }
+        skipSession(sessionTask);
+        return;
       }
 
       session.__sequenceFloor = availableEnd;
@@ -5479,6 +5477,26 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
     const rangeLength = Math.max(60, rangeEnd - rangeStart);
     const percentFor = (minute)=> ((minute - rangeStart) / rangeLength) * 100;
 
+    const markerCache=new WeakMap();
+    const appendMarker=(trackEl, minute, type)=>{
+      if(!trackEl) return;
+      if(minute==null || !Number.isFinite(minute)) return;
+      let cache=markerCache.get(trackEl);
+      if(!cache){
+        cache=new Set();
+        markerCache.set(trackEl, cache);
+      }
+      const key=`${type}:${minute}`;
+      if(cache.has(key)) return;
+      cache.add(key);
+      const marker=el("div","full-schedule-marker");
+      if(type==="start") marker.classList.add("is-start");
+      if(type==="end") marker.classList.add("is-end");
+      const offset=Math.max(0, Math.min(100, percentFor(minute)));
+      marker.style.left=`${offset}%`;
+      trackEl.appendChild(marker);
+    };
+
     const assignLanes = (items)=>{
       if(!items.length) return 1;
       const sorted = items.slice().sort((a,b)=>{
@@ -5597,6 +5615,8 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
         }
         block.title=`${labelForTask(node.task)}\n${toHHMM(node.startMin)} – ${toHHMM(node.endMin)}`;
         clientTrack.appendChild(block);
+        appendMarker(clientTrack, node.startMin, "start");
+        appendMarker(clientTrack, node.endMin, "end");
         clientElements.set(node.id, block);
       });
     }else{
@@ -5639,6 +5659,8 @@ Si una tarea no cabe en su ventana, falta tiempo de desplazamiento o surge cualq
           }
           block.title=`${session.actionName}\n${toHHMM(session.startMin)} – ${toHHMM(session.endMin)}`;
           track.appendChild(block);
+          appendMarker(track, session.startMin, "start");
+          appendMarker(track, session.endMin, "end");
           if(session.taskId && clientElements.has(session.taskId)){
             assignmentPairs.push({ taskId: session.taskId, element: block, color: session.color });
           }
